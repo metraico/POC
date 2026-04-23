@@ -97,22 +97,33 @@ n_days = len(dates)
 
 baseline = np.zeros((n_stores, n_items), dtype=np.float64)
 
-velocity_map = items_df.assign(item_id=items_df['item_id'].astype(str)).set_index('item_id')['velocity_class'].to_dict()
+_idf = items_df.assign(item_id=items_df['item_id'].astype(str))
+velocity_map    = _idf.set_index('item_id')['velocity_class'].to_dict()
+category_map    = _idf.set_index('item_id')['category'].to_dict()
+subcategory_map = _idf.set_index('item_id')['subcategory'].to_dict()
 
-for si, store in enumerate(stores):
-    for ii, item in enumerate(items):
-        local_seed = SEED + ii * 1000 + si
-        rng = np.random.default_rng(local_seed)
-        v = velocity_map[item]
-        if v in ('medium', 'MEDIUM'):
-            baseline[si, ii] = rng.uniform(2.0, 8.0)
-        else:  # slow / SLOW
-            weekly = rng.uniform(3.0, 21.0)
-            baseline[si, ii] = weekly / 7.0
+# Default avg_daily_velocity table (overridden by config['velocity_avg_daily'])
+_VELOCITY_DEFAULTS = {
+    'Salty Snacks_FAST': 12,  'Salty Snacks_MEDIUM': 7,  'Salty Snacks_SLOW': 3,
+    'Carbonated Soft Drinks_12 Pack_FAST': 20, 'Carbonated Soft Drinks_12 Pack_MEDIUM': 12,
+    'Carbonated Soft Drinks_2 LTR_FAST': 16,  'Carbonated Soft Drinks_2 LTR_MEDIUM': 10,
+    'default_FAST': 10, 'default_MEDIUM': 5, 'default_SLOW': 2,
+}
+_vel_map = {**_VELOCITY_DEFAULTS, **config.get('velocity_avg_daily', {})}
+
+def _avg_daily(category, subcategory, velocity_class):
+    vc = str(velocity_class).upper()
+    return (  _vel_map.get(f"{category}_{subcategory}_{vc}")
+           or _vel_map.get(f"{category}_{vc}")
+           or _vel_map.get(f"default_{vc}", 5) )
+
+for ii, item in enumerate(items):
+    daily = float(_avg_daily(category_map[item], subcategory_map[item], velocity_map[item]))
+    baseline[:, ii] = daily   # uniform across stores; store variation comes from noise
 
 # ── Step 3 — Lifecycle multiplier array ──────────────────────────────────────
 
-lifecycle_map = items_df.assign(item_id=items_df['item_id'].astype(str)).set_index('item_id')['lifecycle_profile'].to_dict()
+lifecycle_map = _idf.set_index('item_id')['lifecycle_profile'].to_dict()
 
 lifecycle_arr = np.ones((n_items, n_days), dtype=np.float64)
 day_indices   = np.arange(n_days, dtype=np.float64)
@@ -133,29 +144,41 @@ for ii, item in enumerate(items):
             ramp = 1.0 + (0.3 - 1.0) * (decay_idx / max(n_decay - 1, 1))
             lifecycle_arr[ii, decay_start:] = ramp
 
-# ── Step 4 — Weekly seasonality multiplier ───────────────────────────────────
+# ── Step 4 — Annual seasonality multiplier ───────────────────────────────────
 
-SEASONAL = {}
-for week_range, mult in [
-    (range(1,  5),  0.85),
-    (range(5,  9),  0.88),
-    (range(9,  14), 0.95),
-    (range(14, 18), 1.00),
-    (range(18, 23), 1.05),
-    (range(23, 27), 1.08),
-    (range(27, 31), 1.05),
-    (range(31, 36), 1.00),
-    (range(36, 40), 0.95),
-    (range(40, 45), 1.10),
-    (range(45, 49), 1.20),
-    (range(49, 53), 1.35),
+# Fallback hardcoded weekly indices (used when config has no annual_seasonality)
+_SEASONAL_FALLBACK = {}
+for _wr, _m in [
+    (range(1,  5),  0.85), (range(5,  9),  0.88), (range(9,  14), 0.95),
+    (range(14, 18), 1.00), (range(18, 23), 1.05), (range(23, 27), 1.08),
+    (range(27, 31), 1.05), (range(31, 36), 1.00), (range(36, 40), 0.95),
+    (range(40, 45), 1.10), (range(45, 49), 1.20), (range(49, 53), 1.35),
 ]:
-    for w in week_range:
-        SEASONAL[w] = mult
+    for _w in _wr:
+        _SEASONAL_FALLBACK[_w] = _m
 
-seasonal_arr = np.array([
-    SEASONAL.get(d.isocalendar().week, 1.0) for d in dates
-], dtype=np.float64)
+_annual_weeks = config.get('annual_seasonality', {}).get('weeks', {})
+# YAML keys may be loaded as int or str — normalise to int
+_annual_weeks = {int(k): float(v) for k, v in _annual_weeks.items()}
+
+if _annual_weeks:
+    seasonal_arr = np.array([
+        _annual_weeks.get(d.isocalendar().week, 1.0) for d in dates
+    ], dtype=np.float64)
+else:
+    seasonal_arr = np.array([
+        _SEASONAL_FALLBACK.get(d.isocalendar().week, 1.0) for d in dates
+    ], dtype=np.float64)
+
+# ── Step 4b — Day-of-week seasonality multiplier ─────────────────────────────
+
+_DOW_NAMES  = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday']
+_weekly_cfg = config.get('weekly_seasonality', {})
+if _weekly_cfg:
+    dow_arr      = np.array([
+        float(_weekly_cfg.get(_DOW_NAMES[d.weekday()], 1.0)) for d in dates
+    ], dtype=np.float64)
+    seasonal_arr = seasonal_arr * dow_arr
 
 # ── Step 5 — Daily noise ─────────────────────────────────────────────────────
 

@@ -63,7 +63,9 @@ client = get_ch_client()
 
 # ── Session state defaults ────────────────────────────────────────────────────
 
-for _k, _v in [('account', None), ('wizard', None), ('page', 'accounts'), ('confirm_delete', None)]:
+for _k, _v in [('account', None), ('simulation', None), ('wizard', None),
+               ('page', 'accounts'), ('confirm_delete', None), ('confirm_delete_sim', None),
+               ('new_sim_state', None)]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
@@ -279,6 +281,29 @@ def build_config(wz):
         'case_pack_sizes':        {'Grocery': 12, 'Apparel': 1, 'default': 6},
         'inventory_snapshot_dow': 'Sunday',
         'dc_to_store_same_day':   True,
+        'velocity_avg_daily': {
+            'Salty Snacks_FAST': 12, 'Salty Snacks_MEDIUM': 7, 'Salty Snacks_SLOW': 3,
+            'Carbonated Soft Drinks_12 Pack_FAST': 20, 'Carbonated Soft Drinks_12 Pack_MEDIUM': 12,
+            'Carbonated Soft Drinks_2 LTR_FAST': 16,  'Carbonated Soft Drinks_2 LTR_MEDIUM': 10,
+            'default_FAST': 10, 'default_MEDIUM': 5, 'default_SLOW': 2,
+        },
+        'annual_seasonality': {
+            'type': 'weekly_index',
+            'weeks': {
+                1:1.059, 2:0.883, 3:0.924, 4:0.923, 5:1.046, 6:1.323, 7:0.834,
+                8:0.863, 9:0.858, 10:0.919, 11:0.881, 12:0.950, 13:0.980, 14:0.990,
+                15:1.010, 16:1.020, 17:1.030, 18:1.040, 19:1.050, 20:1.060, 21:1.059,
+                22:1.059, 23:1.059, 24:1.059, 25:1.068, 26:1.105, 27:1.440, 28:1.015,
+                29:1.062, 30:1.016, 31:1.042, 32:1.082, 33:1.043, 34:1.006, 35:1.073,
+                36:1.100, 37:0.978, 38:0.950, 39:0.922, 40:0.972, 41:0.976, 42:0.978,
+                43:0.965, 44:0.994, 45:0.928, 46:0.906, 47:0.946, 48:1.033, 49:0.908,
+                50:1.043, 51:1.040, 52:1.046,
+            },
+        },
+        'weekly_seasonality': {
+            'monday': 1.00, 'tuesday': 1.00, 'wednesday': 1.02,
+            'thursday': 1.03, 'friday': 1.08, 'saturday': 1.12, 'sunday': 1.05,
+        },
     }
 
 def _wz_cancel_cleanup(wz):
@@ -826,13 +851,13 @@ def new_account_page():
             # 6d. View Dashboard ──────────────────────────────────────────────
             if wz.get('sim_done'):
                 st.divider()
-                if st.button("✓ View Dashboard", type="primary"):
+                if st.button("✓ View Simulations", type="primary"):
                     st.session_state.account = {
                         'id':   wz['account']['account_id'],
                         'name': wz['account']['account_name'],
                     }
                     st.session_state.wizard = None
-                    st.session_state.page   = 'dashboard'
+                    st.session_state.page   = 'simulations'
                     st.rerun()
 
 
@@ -899,6 +924,39 @@ def delete_account(account_id: str):
     cur.close()
 
 
+# ── Delete simulation ────────────────────────────────────────────────────────
+
+def delete_simulation(sim_id: str):
+    """Delete a single simulation from ClickHouse and PostgreSQL."""
+    ch_tables = [
+        'sales_history', 'store_orders', 'store_order_details',
+        'store_receipts', 'supplier_orders', 'supplier_order_details',
+        'supplier_receipts', 'store_inventory', 'dc_inventory',
+    ]
+    for tbl in ch_tables:
+        try:
+            client.command(f"ALTER TABLE {tbl} DELETE WHERE simulation_id = %(sid)s",
+                           parameters={'sid': sim_id})
+        except Exception:
+            pass
+
+    cur = get_pg().cursor()
+    cur.execute("DELETE FROM promo_stores      WHERE simulation_id = %s", (sim_id,))
+    cur.execute("DELETE FROM promo_group_items WHERE simulation_id = %s", (sim_id,))
+    cur.execute("DELETE FROM promos            WHERE simulation_id = %s", (sim_id,))
+    cur.execute("DELETE FROM promo_groups      WHERE simulation_id = %s", (sim_id,))
+    cur.execute("DELETE FROM simulation_config WHERE simulation_id = %s", (sim_id,))
+    get_pg().commit()
+    cur.close()
+
+    # Also delete demand rows in ClickHouse
+    try:
+        client.command("ALTER TABLE demand DELETE WHERE simulation_id = %(sid)s",
+                       parameters={'sid': sim_id})
+    except Exception:
+        pass
+
+
 # ── Page: Accounts ────────────────────────────────────────────────────────────
 
 def accounts_page():
@@ -941,9 +999,9 @@ def accounts_page():
             with col2:
                 st.markdown(f"**Status:** {'Active' if is_active else 'Inactive'}")
                 st.write("")
-                if st.button("View Dashboard", key=f"view_{account_id}"):
+                if st.button("View Simulations", key=f"view_{account_id}"):
                     st.session_state.account = {'id': str(account_id), 'name': account_name}
-                    st.session_state.page    = 'dashboard'
+                    st.session_state.page    = 'simulations'
                     st.rerun()
                 if st.button("🗑 Delete", key=f"del_{account_id}",
                              use_container_width=True):
@@ -973,35 +1031,295 @@ def accounts_page():
                     st.rerun()
 
 
+# ── Page: Simulations List ────────────────────────────────────────────────────
+
+def simulations_page():
+    account_id   = st.session_state.account['id']
+    account_name = st.session_state.account['name']
+
+    col_title, col_back, col_new = st.columns([4, 1, 1])
+    col_title.title(f"Simulations — {account_name}")
+    with col_back:
+        st.write("")
+        if st.button("← Accounts", use_container_width=True):
+            st.session_state.account = None
+            st.session_state.page    = 'accounts'
+            st.rerun()
+    with col_new:
+        st.write("")
+        if st.button("+ New Simulation", use_container_width=True):
+            st.session_state.new_sim_state = {}
+            st.session_state.page = 'new_sim'
+            st.rerun()
+
+    cur = get_pg().cursor()
+    cur.execute("""
+        SELECT simulation_id::text, simulation_name, simulation_status,
+               start_week, end_week, created_at
+        FROM simulation_config
+        WHERE account_id = %s
+        ORDER BY created_at DESC
+    """, (account_id,))
+    rows = cur.fetchall()
+    cur.close()
+
+    if not rows:
+        st.info("No simulations yet. Click '+ New Simulation' to create one.")
+        return
+
+    for sim_id, sim_name, sim_status, start_week, end_week, created_at in rows:
+        with st.container(border=True):
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.markdown(f"### {sim_name}")
+                st.caption(f"ID: `{sim_id}`")
+                c1, c2, c3, c4 = st.columns(4)
+                status_color = {'COMPLETED': 'green', 'PENDING': 'orange', 'RUNNING': 'blue'}.get(sim_status, 'grey')
+                c1.markdown(f"**Status:** :{status_color}[{sim_status}]")
+                c2.markdown(f"**Start:** {start_week or '—'}")
+                c3.markdown(f"**End:** {end_week or '—'}")
+                c4.markdown(f"**Created:** {str(created_at)[:10] if created_at else '—'}")
+            with col2:
+                st.write("")
+                if st.button("View Dashboard", key=f"simview_{sim_id}", use_container_width=True):
+                    st.session_state.simulation = {'id': sim_id, 'name': sim_name}
+                    st.session_state.page       = 'dashboard'
+                    st.rerun()
+                if st.button("🗑 Delete", key=f"simdel_{sim_id}", use_container_width=True):
+                    st.session_state.confirm_delete_sim = sim_id
+                    st.rerun()
+
+            if st.session_state.confirm_delete_sim == sim_id:
+                st.warning(f"Delete **{sim_name}** and all its simulation data? This cannot be undone.")
+                cy, cn = st.columns(2)
+                if cy.button("Yes, delete", type="primary", key=f"simdelyes_{sim_id}"):
+                    try:
+                        delete_simulation(sim_id)
+                        st.session_state.confirm_delete_sim = None
+                        st.success(f"Simulation '{sim_name}' deleted.")
+                        st.rerun()
+                    except Exception as e:
+                        try: get_pg().rollback()
+                        except Exception: pass
+                        st.error(f"Delete failed: {e}")
+                if cn.button("Cancel", key=f"simdelno_{sim_id}"):
+                    st.session_state.confirm_delete_sim = None
+                    st.rerun()
+
+
+# ── Page: New Simulation ──────────────────────────────────────────────────────
+
+def new_simulation_page():
+    account_id   = st.session_state.account['id']
+    account_name = st.session_state.account['name']
+    ns = st.session_state.new_sim_state  # mutable dict carried in session
+
+    col_title, col_cancel = st.columns([5, 1])
+    col_title.title("New Simulation")
+    col_title.caption(f"Account: **{account_name}**")
+    if col_cancel.button("✕ Cancel", use_container_width=True):
+        st.session_state.new_sim_state = None
+        st.session_state.page = 'simulations'
+        st.rerun()
+
+    # ── Load defaults from most recent simulation for this account ─────────
+    if not ns.get('_defaults_loaded'):
+        cur = get_pg().cursor()
+        cur.execute("""
+            SELECT dc_configs, store_configs, supplier_configs,
+                   start_week, end_week, random_seed
+            FROM simulation_config
+            WHERE account_id = %s
+            ORDER BY created_at DESC LIMIT 1
+        """, (account_id,))
+        prev = cur.fetchone()
+        cur.execute("SELECT dc_id FROM distribution_centers WHERE account_id = %s", (account_id,))
+        dcs = [r[0] for r in cur.fetchall()]
+        cur.execute("SELECT store_id FROM stores WHERE account_id = %s", (account_id,))
+        stores_list = [r[0] for r in cur.fetchall()]
+        cur.execute("SELECT supplier_id FROM suppliers WHERE account_id = %s", (account_id,))
+        suppliers_list = [r[0] for r in cur.fetchall()]
+        cur.close()
+
+        if prev:
+            ns['dc_configs']       = prev[0] or _dc_config_defaults([{'dc_id': d} for d in dcs])
+            ns['store_configs']    = prev[1] or _store_config_defaults([{'store_id': s} for s in stores_list])
+            ns['supplier_configs'] = prev[2] or _supplier_config_defaults([{'supplier_id': s} for s in suppliers_list])
+            # Pre-fill dates/seed from last sim
+            ns.setdefault('_def_start', (prev[3] + '-01') if prev[3] else '2024-01-01')
+            ns.setdefault('_def_end',   (prev[4] + '-01') if prev[4] else '2024-12-31')
+            ns.setdefault('_def_seed',  int(prev[5]) if prev[5] else 42)
+        else:
+            ns['dc_configs']       = _dc_config_defaults([{'dc_id': d} for d in dcs])
+            ns['store_configs']    = _store_config_defaults([{'store_id': s} for s in stores_list])
+            ns['supplier_configs'] = _supplier_config_defaults([{'supplier_id': s} for s in suppliers_list])
+            ns.setdefault('_def_start', '2024-01-01')
+            ns.setdefault('_def_end',   '2024-12-31')
+            ns.setdefault('_def_seed',  42)
+        ns['_defaults_loaded'] = True
+
+    # ── Sim Config ─────────────────────────────────────────────────────────
+    st.subheader("Simulation Settings")
+    for k, v in [('ns_sim_name',  ''),
+                 ('ns_start_dt',  ns.get('_def_start', '2024-01-01')),
+                 ('ns_end_dt',    ns.get('_def_end',   '2024-12-31')),
+                 ('ns_rand_seed', ns.get('_def_seed',  42))]:
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.text_input("Simulation Name", key='ns_sim_name', placeholder="My New Run")
+    c2.text_input("Start Date (YYYY-MM-DD)", key='ns_start_dt')
+    c3.text_input("End Date (YYYY-MM-DD)",   key='ns_end_dt')
+    c4.number_input("Random Seed", min_value=0, key='ns_rand_seed')
+
+    st.divider()
+
+    # ── DC / Store / Supplier config editors ──────────────────────────────
+
+    st.markdown("**DC Reliability & Stock Configs**")
+    dc_edited  = st.data_editor(pd.DataFrame(ns['dc_configs']),
+                                use_container_width=True, num_rows="fixed", key='ns_dc_editor')
+    ns['dc_configs'] = dc_edited.to_dict('records')
+
+    st.divider()
+    st.markdown("**Store Replenishment Configs**")
+    st_edited = st.data_editor(pd.DataFrame(ns['store_configs']),
+                                use_container_width=True, num_rows="fixed", key='ns_st_editor')
+    ns['store_configs'] = st_edited.to_dict('records')
+
+    st.divider()
+    st.markdown("**Supplier Reliability Configs**")
+    sup_edited = st.data_editor(pd.DataFrame(ns['supplier_configs']),
+                                use_container_width=True, num_rows="fixed", key='ns_sup_editor')
+    ns['supplier_configs'] = sup_edited.to_dict('records')
+
+    st.divider()
+
+    regen_demand = st.checkbox(
+        "Regenerate demand matrix",
+        value=False,
+        key='ns_regen_demand',
+        help="Re-run demand_gen.py before the simulation. Use this if you changed dates, seed, or want fresh demand. "
+             "If unchecked, the existing demand_matrix.parquet is reused."
+    )
+
+    # ── Save & Run ─────────────────────────────────────────────────────────
+    sim_out = st.empty()
+
+    col_save, col_run = st.columns(2)
+    if not ns.get('saved'):
+        if col_save.button("💾 Save Simulation", type="primary"):
+            sim_name = st.session_state.ns_sim_name.strip()
+            if not sim_name:
+                st.error("Simulation name is required.")
+            else:
+                try:
+                    new_sim_id = str(uuid.uuid4())
+                    cur = get_pg().cursor()
+                    cur.execute("""
+                        INSERT INTO simulation_config
+                          (simulation_id, account_id, simulation_name, config_name,
+                           created_at, simulation_status, start_week, end_week, random_seed,
+                           dc_configs, store_configs, supplier_configs)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb)
+                    """, (new_sim_id, account_id, sim_name, 'Default Config',
+                          date.today(), 'PENDING',
+                          st.session_state.ns_start_dt[:7], st.session_state.ns_end_dt[:7],
+                          int(st.session_state.ns_rand_seed),
+                          json.dumps(ns['dc_configs']),
+                          json.dumps(ns['store_configs']),
+                          json.dumps(ns['supplier_configs'])))
+                    get_pg().commit(); cur.close()
+                    ns['saved']      = True
+                    ns['sim_id']     = new_sim_id
+                    ns['sim_name']   = sim_name
+                    ns['start_date'] = st.session_state.ns_start_dt.strip()
+                    ns['end_date']   = st.session_state.ns_end_dt.strip()
+                    ns['seed']       = int(st.session_state.ns_rand_seed)
+                    st.success(f"Saved — `{new_sim_id}`")
+                    st.rerun()
+                except Exception as e:
+                    try: get_pg().rollback()
+                    except Exception: pass
+                    st.error(f"Save failed: {e}")
+    else:
+        st.success(f"Saved — `{ns['sim_id']}`")
+
+    if ns.get('saved') and not ns.get('sim_done'):
+        if col_run.button("▶ Run Simulation", type="primary"):
+            cfg_path = os.path.join(PROJECT_ROOT, f"config_{account_id}.yaml")
+            if not os.path.exists(cfg_path):
+                st.error(f"Config file not found: {cfg_path}.")
+            else:
+                with open(cfg_path) as f:
+                    cfg_dict = yaml.safe_load(f)
+                cfg_dict['run_id']     = ns['sim_id']
+                cfg_dict['seed']       = ns['seed']
+                cfg_dict['start_date'] = ns['start_date']
+                cfg_dict['end_date']   = ns['end_date']
+                new_cfg_path = os.path.join(PROJECT_ROOT, f"config_{ns['sim_id']}.yaml")
+                with open(new_cfg_path, 'w') as f:
+                    yaml.dump(cfg_dict, f, default_flow_style=False)
+
+                ok = True
+                if st.session_state.get('ns_regen_demand'):
+                    with st.spinner("Regenerating demand matrix..."):
+                        rc_d = run_script('demand_gen.py', [
+                            '--config',     new_cfg_path,
+                            '--sim_id',     ns['sim_id'],
+                            '--account_id', account_id,
+                        ], sim_out)
+                    if rc_d != 0:
+                        st.error("demand_gen.py failed — check output above.")
+                        ok = False
+
+                if ok:
+                    with st.spinner("Running simulation.py..."):
+                        rc = run_script('simulation.py',
+                                        ['--config', new_cfg_path,
+                                         '--sim_id',     ns['sim_id'],
+                                         '--account_id', account_id],
+                                        sim_out)
+                    if rc == 0:
+                        try:
+                            cur = get_pg().cursor()
+                            cur.execute(
+                                "UPDATE simulation_config SET simulation_status='COMPLETED', "
+                                "simulation_run_date=%s WHERE simulation_id=%s",
+                                (date.today(), ns['sim_id'])
+                            )
+                            get_pg().commit(); cur.close()
+                        except Exception:
+                            pass
+                        ns['sim_done'] = True
+                        st.success("Simulation complete!"); st.rerun()
+                    else:
+                        st.error("simulation.py failed — check output above.")
+
+    if ns.get('sim_done'):
+        st.success("Simulation complete.")
+        if st.button("← Back to Simulations", type="primary"):
+            st.session_state.new_sim_state = None
+            st.session_state.page = 'simulations'
+            st.rerun()
+
+
 # ── Page: Dashboard ───────────────────────────────────────────────────────────
 
 def dashboard_page():
     account_id   = st.session_state.account['id']
     account_name = st.session_state.account['name']
+    selected_sim = st.session_state.simulation['id']
+    sim_name     = st.session_state.simulation['name']
 
     st.title("Simulation Dashboard")
-    st.caption(f"Account: **{account_name}**")
+    st.caption(f"Account: **{account_name}** | Simulation: **{sim_name}**")
 
-    if st.button("← Back to Accounts"):
-        st.session_state.account = None
-        st.session_state.page    = 'accounts'
+    if st.button("← Back to Simulations"):
+        st.session_state.simulation = None
+        st.session_state.page       = 'simulations'
         st.rerun()
-
-    @st.cache_data
-    def load_simulations(acc_id):
-        conn = psycopg2.connect(
-            host=os.environ['PG_HOST'], port=os.environ.get('PG_PORT', 5432),
-            dbname=os.environ['PG_DB'], user=os.environ['PG_USER'],
-            password=os.environ['PG_PASSWORD'],
-            sslmode=os.environ.get('PG_SSLMODE', 'prefer')
-        )
-        df = pd.read_sql(
-            "SELECT simulation_id::text, simulation_name FROM simulation_config "
-            "WHERE account_id = %s ORDER BY simulation_name",
-            conn, params=(acc_id,)
-        )
-        conn.close()
-        return df
 
     @st.cache_data
     def load_filter_options(sim_id):
@@ -1084,23 +1402,11 @@ def dashboard_page():
             parameters=params
         )
 
-    sims_df = load_simulations(account_id)
-    if sims_df.empty:
-        st.warning("No simulations found. Run simulation.py first.")
-        return
-
     with st.sidebar:
         st.header("Filters")
-        sim_options = sims_df.set_index('simulation_id')['simulation_name'].to_dict()
-        selected_sim = st.selectbox(
-            "Simulation",
-            options=list(sim_options.keys()),
-            format_func=lambda k: sim_options.get(k, k)
-        )
-
         stores, items, weeks = load_filter_options(selected_sim)
         if not weeks:
-            st.warning("No data for this simulation."); st.stop()
+            st.warning("No sales data for this simulation yet."); st.stop()
 
         selected_store = st.selectbox("Store", ["All"] + stores)
         selected_item  = st.selectbox("Item",  ["All"] + items)
@@ -1114,7 +1420,7 @@ def dashboard_page():
         week_from = weeks[week_start_idx]
         week_to   = weeks[week_end_idx]
 
-    tab_sales, tab_config, tab_demand = st.tabs(["Sales", "Config", "Demand Matrix"])
+    tab_sales, tab_config, tab_demand, tab_rerun = st.tabs(["Sales", "Config", "Demand Matrix", "Re-run"])
 
     # ── Tab: Sales ────────────────────────────────────────────────────────────
     with tab_sales:
@@ -1222,6 +1528,95 @@ def dashboard_page():
                 if truncated:
                     st.warning("Result exceeds 5,000 rows — apply filters to narrow the selection.")
                 st.dataframe(demand_df, use_container_width=True, hide_index=True)
+
+    # ── Tab: Re-run ───────────────────────────────────────────────────────────
+    with tab_rerun:
+        st.caption(
+            "Modify DC / Store / Supplier configs and re-run the simulation. "
+            "The existing demand matrix is reused — no new demand generation needed."
+        )
+
+        dc_data, store_data, sup_data = load_sim_configs(selected_sim)
+
+        rr_dc_edited  = st.data_editor(pd.DataFrame(dc_data)    if dc_data    else pd.DataFrame(),
+                                       use_container_width=True, num_rows="fixed", key='rr_dc_editor',
+                                       disabled=not bool(dc_data))
+        st.divider()
+        rr_st_edited  = st.data_editor(pd.DataFrame(store_data) if store_data else pd.DataFrame(),
+                                       use_container_width=True, num_rows="fixed", key='rr_st_editor',
+                                       disabled=not bool(store_data))
+        st.divider()
+        rr_sup_edited = st.data_editor(pd.DataFrame(sup_data)   if sup_data   else pd.DataFrame(),
+                                       use_container_width=True, num_rows="fixed", key='rr_sup_editor',
+                                       disabled=not bool(sup_data))
+        st.divider()
+
+        rr_name = st.text_input("New Simulation Name", value=sim_name + " (re-run)", key='rr_sim_name')
+        rr_out  = st.empty()
+
+        if st.button("▶ Re-run Simulation", type="primary", key='rr_run_btn'):
+            if not rr_name.strip():
+                st.error("Simulation name is required.")
+            else:
+                cfg_path = os.path.join(PROJECT_ROOT, f"config_{account_id}.yaml")
+                if not os.path.exists(cfg_path):
+                    st.error(f"Config file not found: {cfg_path}")
+                else:
+                    try:
+                        # 1. Create new simulation_config row with edited configs
+                        new_sim_id = str(uuid.uuid4())
+                        cur = get_pg().cursor()
+                        cur.execute("""
+                            INSERT INTO simulation_config
+                              (simulation_id, account_id, simulation_name, config_name,
+                               created_at, simulation_status, start_week, end_week, random_seed,
+                               dc_configs, store_configs, supplier_configs)
+                            SELECT %s, account_id, %s, config_name,
+                                   current_date, 'PENDING', start_week, end_week, random_seed,
+                                   %s::jsonb, %s::jsonb, %s::jsonb
+                            FROM simulation_config WHERE simulation_id = %s
+                        """, (new_sim_id, rr_name.strip(),
+                              json.dumps(rr_dc_edited.to_dict('records')  if not rr_dc_edited.empty  else []),
+                              json.dumps(rr_st_edited.to_dict('records')  if not rr_st_edited.empty  else []),
+                              json.dumps(rr_sup_edited.to_dict('records') if not rr_sup_edited.empty else []),
+                              selected_sim))
+                        get_pg().commit(); cur.close()
+
+                        # 2. Write updated config yaml with new sim id
+                        with open(cfg_path) as f:
+                            cfg_dict = yaml.safe_load(f)
+                        cfg_dict['run_id'] = new_sim_id
+                        new_cfg_path = os.path.join(PROJECT_ROOT, f"config_{new_sim_id}.yaml")
+                        with open(new_cfg_path, 'w') as f:
+                            yaml.dump(cfg_dict, f, default_flow_style=False)
+
+                        # 3. Run simulation (demand_matrix.parquet already on disk)
+                        with st.spinner("Running simulation.py..."):
+                            rc = run_script('simulation.py',
+                                            ['--config', new_cfg_path,
+                                             '--sim_id',     new_sim_id,
+                                             '--account_id', account_id],
+                                            rr_out)
+                        if rc == 0:
+                            cur = get_pg().cursor()
+                            cur.execute(
+                                "UPDATE simulation_config SET simulation_status='COMPLETED', "
+                                "simulation_run_date=%s WHERE simulation_id=%s",
+                                (date.today(), new_sim_id)
+                            )
+                            get_pg().commit(); cur.close()
+                            st.success(f"Re-run complete! New simulation: `{new_sim_id}`")
+                            # Navigate to new simulation's dashboard
+                            st.session_state.simulation = {'id': new_sim_id, 'name': rr_name.strip()}
+                            st.rerun()
+                        else:
+                            try: get_pg().rollback()
+                            except Exception: pass
+                            st.error("simulation.py failed — check output above.")
+                    except Exception as e:
+                        try: get_pg().rollback()
+                        except Exception: pass
+                        st.error(f"Error: {e}")
 
 
 # ── Page: Config ──────────────────────────────────────────────────────────────
@@ -1355,9 +1750,13 @@ def config_page():
 
 if st.session_state.wizard is not None:
     new_account_page()
+elif st.session_state.page == 'new_sim' and st.session_state.account is not None:
+    new_simulation_page()
 elif st.session_state.page == 'config':
     config_page()
-elif st.session_state.page == 'dashboard' and st.session_state.account is not None:
+elif st.session_state.page == 'simulations' and st.session_state.account is not None:
+    simulations_page()
+elif st.session_state.page == 'dashboard' and st.session_state.account is not None and st.session_state.simulation is not None:
     dashboard_page()
 else:
     accounts_page()

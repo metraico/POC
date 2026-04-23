@@ -16,7 +16,9 @@
       "Bash(/Users/niranjan/Metrai/MetraiCo/POC/.venv/bin/python:*)",
       "Bash(/Users/niranjan/Metrai/MetraiCo/POC/.venv/bin/pip install:*)",
       "Bash(/Users/niranjan/Metrai/MetraiCo/POC/.venv/bin/pip --version)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(python:*)",
+      "Bash(.venv/bin/python:*)"
     ]
   }
 }
