@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep:*)",
+      "Bash(CH_HOST=garsorxycw.ap-south-1.aws.clickhouse.cloud CH_PORT=8443 CH_DB=sim CH_USER=default CH_PASSWORD='kmT6B_cYSZuO8' .venv/bin/python:*)",
+      "Bash(PG_HOST=localhost PG_PORT=5432 PG_DB=sim PG_USER=postgres PG_PASSWORD=niranjan .venv/bin/python:*)",
+      "Bash(PG_HOST=localhost PG_PORT=5432 PG_DB=sim PG_USER=postgres PG_PASSWORD=niranjan CH_HOST=garsorxycw.ap-south-1.aws.clickhouse.cloud CH_PORT=8443 CH_DB=sim CH_USER=default CH_PASSWORD='kmT6B_cYSZuO8' .venv/bin/python:*)",
+      "Bash(CH_HOST=garsorxycw.ap-south-1.aws.clickhouse.cloud CH_PORT=8443 CH_DB=sim CH_USER=default CH_PASSWORD='kmT6B_cYSZuO8' .venv/bin/streamlit run:*)",
+      "Bash(.venv/bin/streamlit run:*)",
+      "Bash(.venv/bin/pip show:*)",
+      "Bash(.venv/bin/pip install:*)",
+      "Bash(PG_HOST=ep-nameless-wave-anp0c4gp-pooler.c-6.us-east-1.aws.neon.tech PG_PORT=5432 PG_DB=neondb PG_USER=neondb_owner PG_PASSWORD=npg_yBWHjg2vQba1 PG_SSLMODE=require CH_HOST=garsorxycw.ap-south-1.aws.clickhouse.cloud CH_PORT=8443 CH_DB=sim CH_USER=default CH_PASSWORD='kmT6B_cYSZuO8' .venv/bin/python:*)"
+    ]
+  }
+}
