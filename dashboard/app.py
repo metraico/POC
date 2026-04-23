@@ -21,6 +21,12 @@ import streamlit as st
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 PROJECT_ROOT = str(Path(__file__).parent.parent)
+
+def safe_int(val, default=0):
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return default
 VENV_PYTHON  = str(Path(__file__).parent.parent / ".venv" / "bin" / "python")
 
 st.set_page_config(page_title="Retail Supply Chain Dashboard", layout="wide")
@@ -57,7 +63,7 @@ client = get_ch_client()
 
 # ── Session state defaults ────────────────────────────────────────────────────
 
-for _k, _v in [('account', None), ('wizard', None), ('page', 'accounts')]:
+for _k, _v in [('account', None), ('wizard', None), ('page', 'accounts'), ('confirm_delete', None)]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
@@ -275,6 +281,23 @@ def build_config(wz):
         'dc_to_store_same_day':   True,
     }
 
+def _wz_cancel_cleanup(wz):
+    """Delete any data already saved to Postgres for this wizard session."""
+    account_id = wz.get('account', {}).get('account_id')
+    if not account_id:
+        return  # nothing was saved yet
+    try:
+        cur = get_pg().cursor()
+        cur.execute("DELETE FROM retailer_accounts WHERE account_id = %s", (account_id,))
+        get_pg().commit()
+        cur.close()
+    except Exception:
+        try:
+            get_pg().rollback()
+        except Exception:
+            pass
+
+
 def _wz_save_all(wz):
     """Save all wizard data to Postgres in FK order."""
     new_account_id = str(uuid.uuid4())
@@ -337,8 +360,8 @@ def _wz_save_all(wz):
               i.get('subcategory', i['category']), i.get('brand','Generic'),
               float(i['unit_cost']), float(i['unit_price']),
               str(i['velocity_class']).upper(), str(i['lifecycle_profile']).lower(),
-              int(i['case_pack_size']), i.get('size_group','STD'),
-              int(i.get('size_rank', 1)), bool(str(i.get('is_ecomm_eligible','FALSE')).upper() == 'TRUE')))
+              safe_int(i['case_pack_size'], 1), i.get('size_group','STD'),
+              safe_int(i.get('size_rank', 1), 1), bool(str(i.get('is_ecomm_eligible','FALSE')).upper() == 'TRUE')))
 
     # 6. store_items (upload or default: all stores × all items)
     store_items = wz.get('store_items')
@@ -379,7 +402,28 @@ def _wz_save_all(wz):
         cur.execute("INSERT INTO dc_mappings (from_dc_id,to_node,mapping_type) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
                     (m['from_dc_id'], m['to_node'], m.get('mapping_type','DC_SUPPLIER')))
 
-    # 11. promos (resolve names → UUIDs)
+    # 11. simulation_config (must exist before promos due to FK)
+    sim_cfg = wz.get('sim_config', {})
+    start_str = str(sim_cfg.get('start_date', '2024-01-01'))
+    end_str   = str(sim_cfg.get('end_date',   '2024-12-31'))
+
+    cur.execute("""
+        INSERT INTO simulation_config
+          (simulation_id, account_id, simulation_name, config_name,
+           created_at, simulation_status, start_week, end_week, random_seed,
+           dc_configs, store_configs, supplier_configs)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb)
+    """, (new_sim_id, new_account_id,
+          sim_cfg.get('simulation_name', acct['account_name'] + ' Simulation'),
+          'Default Config',
+          date.today(), 'PENDING',
+          start_str[:7], end_str[:7],
+          int(sim_cfg.get('random_seed', 42)),
+          json.dumps(wz.get('dc_configs', [])),
+          json.dumps(wz.get('store_configs', [])),
+          json.dumps(wz.get('supplier_configs', []))))
+
+    # 12. promos (resolve names → UUIDs)
     pg_name_to_uuid    = {}
     promo_name_to_uuid = {}
 
@@ -408,7 +452,7 @@ def _wz_save_all(wz):
               p.get('event_type','SEASONAL'),
               p.get('start_date'), p.get('end_date'),
               float(p.get('demand_multiplier', 1.5)),
-              int(p.get('post_promo_decay_days', 0)),
+              safe_int(p.get('post_promo_decay_days', 0), 0),
               p.get('post_promo_decay_shape','LINEAR')))
 
     for pgi in wz.get('promo_group_items', []):
@@ -426,27 +470,6 @@ def _wz_save_all(wz):
                 INSERT INTO promo_stores (promo_id, store_id, simulation_id)
                 VALUES (%s,%s,%s) ON CONFLICT DO NOTHING
             """, (p_uuid, ps['store_id'], new_sim_id))
-
-    # 12. simulation_config with JSONB
-    sim_cfg = wz.get('sim_config', {})
-    start_str = str(sim_cfg.get('start_date', '2024-01-01'))
-    end_str   = str(sim_cfg.get('end_date',   '2024-12-31'))
-
-    cur.execute("""
-        INSERT INTO simulation_config
-          (simulation_id, account_id, simulation_name, config_name,
-           created_at, simulation_status, start_week, end_week, random_seed,
-           dc_configs, store_configs, supplier_configs)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb)
-    """, (new_sim_id, new_account_id,
-          sim_cfg.get('simulation_name', acct['account_name'] + ' Simulation'),
-          'Default Config',
-          date.today(), 'PENDING',
-          start_str[:7], end_str[:7],
-          int(sim_cfg.get('random_seed', 42)),
-          json.dumps(wz.get('dc_configs', [])),
-          json.dumps(wz.get('store_configs', [])),
-          json.dumps(wz.get('supplier_configs', []))))
 
     get_pg().commit()
     cur.close()
@@ -473,11 +496,14 @@ def _store_config_defaults(stores):
     return [
         {
             'store_id': s['store_id'],
+            'order_cycle_day': 'MONDAY',
             'order_cycle_days': 7,
             'coverage_days_medium': 10,
             'coverage_days_slow': 14,
             'start_stock_days': 5,
             'reorder_point_weeks': 1,
+            'target_stock_weeks': 2,
+            'weeks_of_cover_threshold': 1,
         }
         for s in stores
     ]
@@ -501,7 +527,9 @@ def new_account_page():
     col_title, col_cancel = st.columns([5, 1])
     col_title.title("New Account Setup")
     if col_cancel.button("✕ Cancel", use_container_width=True):
-        st.session_state.wizard = None; st.rerun()
+        _wz_cancel_cleanup(wz)
+        st.session_state.wizard = None
+        st.rerun()
 
     # ── Completion flags ──────────────────────────────────────────────────────
     has_account = bool(wz.get('account'))
@@ -808,6 +836,69 @@ def new_account_page():
                     st.rerun()
 
 
+# ── Delete account ───────────────────────────────────────────────────────────
+
+def delete_account(account_id: str):
+    """Delete all data for an account from ClickHouse then PostgreSQL."""
+    # 1. Get simulation IDs for this account
+    cur = get_pg().cursor()
+    cur.execute("SELECT simulation_id::text FROM simulation_config WHERE account_id = %s", (account_id,))
+    sim_ids = [r[0] for r in cur.fetchall()]
+    cur.close()
+
+    # 2. Delete from ClickHouse (all simulation data)
+    ch_tables = [
+        'sales_history', 'store_orders', 'store_order_details',
+        'store_receipts', 'supplier_orders', 'supplier_order_details',
+        'supplier_receipts', 'store_inventory', 'dc_inventory',
+    ]
+    for sim_id in sim_ids:
+        for tbl in ch_tables:
+            try:
+                client.command(f"ALTER TABLE {tbl} DELETE WHERE simulation_id = %(sid)s",
+                               parameters={'sid': sim_id})
+            except Exception:
+                pass  # table may not exist or may have no rows — skip
+
+    # 3. Delete from PostgreSQL in FK-safe order
+    cur = get_pg().cursor()
+    for sim_id in sim_ids:
+        cur.execute("DELETE FROM promo_stores        WHERE simulation_id = %s", (sim_id,))
+        cur.execute("DELETE FROM promo_group_items   WHERE simulation_id = %s", (sim_id,))
+        cur.execute("DELETE FROM promos              WHERE simulation_id = %s", (sim_id,))
+        cur.execute("DELETE FROM promo_groups        WHERE simulation_id = %s", (sim_id,))
+
+    cur.execute("DELETE FROM simulation_config WHERE account_id = %s", (account_id,))
+
+    # Resolve store/dc/supplier/item IDs owned by this account
+    cur.execute("SELECT store_id    FROM stores    WHERE account_id = %s", (account_id,))
+    store_ids = [r[0] for r in cur.fetchall()]
+    cur.execute("SELECT dc_id       FROM distribution_centers WHERE account_id = %s", (account_id,))
+    dc_ids = [r[0] for r in cur.fetchall()]
+    cur.execute("SELECT supplier_id FROM suppliers WHERE account_id = %s", (account_id,))
+    sup_ids = [r[0] for r in cur.fetchall()]
+    cur.execute("SELECT item_id     FROM items     WHERE account_id = %s", (account_id,))
+    item_ids = [r[0] for r in cur.fetchall()]
+
+    for sid in store_ids:
+        cur.execute("DELETE FROM store_mappings WHERE from_store_id = %s", (sid,))
+        cur.execute("DELETE FROM store_items    WHERE store_id      = %s", (sid,))
+    for did in dc_ids:
+        cur.execute("DELETE FROM dc_mappings WHERE from_dc_id = %s", (did,))
+        cur.execute("DELETE FROM dc_items    WHERE dc_id      = %s", (did,))
+    for sup in sup_ids:
+        cur.execute("DELETE FROM supplier_items WHERE supplier_id = %s", (sup,))
+
+    cur.execute("DELETE FROM stores               WHERE account_id = %s", (account_id,))
+    cur.execute("DELETE FROM distribution_centers WHERE account_id = %s", (account_id,))
+    cur.execute("DELETE FROM suppliers            WHERE account_id = %s", (account_id,))
+    cur.execute("DELETE FROM items                WHERE account_id = %s", (account_id,))
+    cur.execute("DELETE FROM retailer_accounts    WHERE account_id = %s", (account_id,))
+
+    get_pg().commit()
+    cur.close()
+
+
 # ── Page: Accounts ────────────────────────────────────────────────────────────
 
 def accounts_page():
@@ -850,9 +941,35 @@ def accounts_page():
             with col2:
                 st.markdown(f"**Status:** {'Active' if is_active else 'Inactive'}")
                 st.write("")
-                if st.button("View Dashboard", key=str(account_id)):
+                if st.button("View Dashboard", key=f"view_{account_id}"):
                     st.session_state.account = {'id': str(account_id), 'name': account_name}
                     st.session_state.page    = 'dashboard'
+                    st.rerun()
+                if st.button("🗑 Delete", key=f"del_{account_id}",
+                             use_container_width=True):
+                    st.session_state.confirm_delete = str(account_id)
+                    st.rerun()
+
+            # Confirmation prompt (shown inline under the card)
+            if st.session_state.confirm_delete == str(account_id):
+                st.warning(
+                    f"Delete **{account_name}** and all its data from PostgreSQL and "
+                    f"ClickHouse? This cannot be undone."
+                )
+                c_yes, c_no = st.columns(2)
+                if c_yes.button("Yes, delete everything", type="primary",
+                                key=f"confirm_yes_{account_id}"):
+                    try:
+                        delete_account(str(account_id))
+                        st.session_state.confirm_delete = None
+                        st.success(f"Account '{account_name}' deleted.")
+                        st.rerun()
+                    except Exception as e:
+                        try: get_pg().rollback()
+                        except Exception: pass
+                        st.error(f"Delete failed: {e}")
+                if c_no.button("Cancel", key=f"confirm_no_{account_id}"):
+                    st.session_state.confirm_delete = None
                     st.rerun()
 
 
@@ -862,7 +979,7 @@ def dashboard_page():
     account_id   = st.session_state.account['id']
     account_name = st.session_state.account['name']
 
-    st.title("Sales by Week")
+    st.title("Simulation Dashboard")
     st.caption(f"Account: **{account_name}**")
 
     if st.button("← Back to Accounts"):
@@ -924,6 +1041,49 @@ def dashboard_page():
             parameters=params
         )
 
+    @st.cache_data
+    def load_sim_configs(sim_id):
+        conn = psycopg2.connect(
+            host=os.environ['PG_HOST'], port=os.environ.get('PG_PORT', 5432),
+            dbname=os.environ['PG_DB'], user=os.environ['PG_USER'],
+            password=os.environ['PG_PASSWORD'],
+            sslmode=os.environ.get('PG_SSLMODE', 'prefer')
+        )
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT dc_configs, store_configs, supplier_configs "
+            "FROM simulation_config WHERE simulation_id = %s",
+            (sim_id,)
+        )
+        row = cur.fetchone()
+        cur.close(); conn.close()
+        if row is None:
+            return [], [], []
+        return row[0] or [], row[1] or [], row[2] or []
+
+    @st.cache_data
+    def load_demand(sim_id, stores_filter, items_filter, w_from, w_to):
+        params = {'sid': sim_id, 'wf': w_from, 'wt': w_to}
+        where_extra = ""
+        if stores_filter:
+            where_extra += " AND store_id IN %(stores)s"
+            params['stores'] = tuple(stores_filter)
+        if items_filter:
+            where_extra += " AND item_id IN %(items)s"
+            params['items'] = tuple(items_filter)
+        return client.query_df(
+            "SELECT store_id, item_id, demand_week, "
+            "  sum(demand_qty) AS total_qty, "
+            "  countIf(is_promo_demand) AS promo_days "
+            "FROM demand "
+            f"WHERE simulation_id = %(sid)s{where_extra} "
+            "  AND demand_week >= %(wf)s AND demand_week <= %(wt)s "
+            "GROUP BY store_id, item_id, demand_week "
+            "ORDER BY demand_week, store_id, item_id "
+            "LIMIT 5001",
+            parameters=params
+        )
+
     sims_df = load_simulations(account_id)
     if sims_df.empty:
         st.warning("No simulations found. Run simulation.py first.")
@@ -954,44 +1114,114 @@ def dashboard_page():
         week_from = weeks[week_start_idx]
         week_to   = weeks[week_end_idx]
 
-    with st.spinner("Loading..."):
-        sales_df = load_sales(selected_sim, selected_store, selected_item, week_from, week_to)
+    tab_sales, tab_config, tab_demand = st.tabs(["Sales", "Config", "Demand Matrix"])
 
-    if sales_df.empty:
-        st.info("No sales data for the selected filters.")
-        return
+    # ── Tab: Sales ────────────────────────────────────────────────────────────
+    with tab_sales:
+        with st.spinner("Loading..."):
+            sales_df = load_sales(selected_sim, selected_store, selected_item, week_from, week_to)
 
-    title = "Total Sales — All Stores / All Items"
-    if selected_store != "All" and selected_item != "All":
-        title = f"Sales — {selected_store} / {selected_item}"
-    elif selected_store != "All":
-        title = f"Sales — {selected_store} (all items)"
-    elif selected_item != "All":
-        title = f"Sales — {selected_item} (all stores)"
+        if sales_df.empty:
+            st.info("No sales data for the selected filters.")
+        else:
+            title = "Total Sales — All Stores / All Items"
+            if selected_store != "All" and selected_item != "All":
+                title = f"Sales — {selected_store} / {selected_item}"
+            elif selected_store != "All":
+                title = f"Sales — {selected_store} (all items)"
+            elif selected_item != "All":
+                title = f"Sales — {selected_item} (all stores)"
 
-    fig = go.Figure(go.Bar(
-        x=sales_df['sales_week'],
-        y=sales_df['total_sales'],
-        marker_color='steelblue',
-        name='Units Sold',
-    ))
-    fig.update_layout(
-        title=title,
-        xaxis_title="Week",
-        yaxis_title="Units Sold",
-        height=420,
-        margin=dict(l=40, r=20, t=50, b=60),
-        xaxis=dict(tickangle=-45),
-    )
-    st.plotly_chart(fig, use_container_width=True)
+            fig = go.Figure(go.Bar(
+                x=sales_df['sales_week'],
+                y=sales_df['total_sales'],
+                marker_color='steelblue',
+                name='Units Sold',
+            ))
+            fig.update_layout(
+                title=title,
+                xaxis_title="Week",
+                yaxis_title="Units Sold",
+                height=420,
+                margin=dict(l=40, r=20, t=50, b=60),
+                xaxis=dict(tickangle=-45),
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-    total = int(sales_df['total_sales'].sum())
-    avg   = round(sales_df['total_sales'].mean(), 1)
-    peak  = sales_df.loc[sales_df['total_sales'].idxmax()]
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total Units Sold", f"{total:,}")
-    c2.metric("Avg per Week",     f"{avg:,}")
-    c3.metric("Peak Week",        f"{peak['sales_week']} ({int(peak['total_sales']):,} units)")
+            total = int(sales_df['total_sales'].sum())
+            avg   = round(sales_df['total_sales'].mean(), 1)
+            peak  = sales_df.loc[sales_df['total_sales'].idxmax()]
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Units Sold", f"{total:,}")
+            c2.metric("Avg per Week",     f"{avg:,}")
+            c3.metric("Peak Week",        f"{peak['sales_week']} ({int(peak['total_sales']):,} units)")
+
+    # ── Tab: Config ───────────────────────────────────────────────────────────
+    with tab_config:
+        dc_data, store_data, sup_data = load_sim_configs(selected_sim)
+        sub_dc, sub_store, sub_sup = st.tabs(["DC Configs", "Store Configs", "Supplier Configs"])
+
+        with sub_dc:
+            if dc_data:
+                st.dataframe(pd.DataFrame(dc_data), use_container_width=True, hide_index=True)
+            else:
+                st.info("No DC config data for this simulation.")
+
+        with sub_store:
+            if store_data:
+                st.dataframe(pd.DataFrame(store_data), use_container_width=True, hide_index=True)
+            else:
+                st.info("No store config data for this simulation.")
+
+        with sub_sup:
+            if sup_data:
+                st.dataframe(pd.DataFrame(sup_data), use_container_width=True, hide_index=True)
+            else:
+                st.info("No supplier config data for this simulation.")
+
+    # ── Tab: Demand Matrix ────────────────────────────────────────────────────
+    with tab_demand:
+        st.caption("Aggregated demand per store / item / week for the selected simulation.")
+
+        d_c1, d_c2, d_c3 = st.columns(3)
+        dm_stores = d_c1.multiselect("Stores", stores, placeholder="All stores")
+        dm_items  = d_c2.multiselect("Items",  items,  placeholder="All items")
+        if weeks:
+            dm_week_idx = d_c3.select_slider(
+                "Week range",
+                options=range(len(weeks)),
+                value=(0, len(weeks) - 1),
+                format_func=lambda i: weeks[i],
+                key="dm_week_slider"
+            )
+            dm_week_from = weeks[dm_week_idx[0]]
+            dm_week_to   = weeks[dm_week_idx[1]]
+        else:
+            dm_week_from = dm_week_to = None
+
+        if dm_week_from is not None:
+            with st.spinner("Loading demand matrix..."):
+                demand_df = load_demand(
+                    selected_sim,
+                    tuple(dm_stores) if dm_stores else (),
+                    tuple(dm_items)  if dm_items  else (),
+                    dm_week_from, dm_week_to
+                )
+
+            truncated = len(demand_df) > 5000
+            if truncated:
+                demand_df = demand_df.head(5000)
+
+            m1, m2 = st.columns(2)
+            m1.metric("Rows shown", f"{len(demand_df):,}" + (" (capped at 5,000)" if truncated else ""))
+            m2.metric("Total demand qty", f"{int(demand_df['total_qty'].sum()):,}" if not demand_df.empty else "0")
+
+            if demand_df.empty:
+                st.info("No demand data for the selected filters.")
+            else:
+                if truncated:
+                    st.warning("Result exceeds 5,000 rows — apply filters to narrow the selection.")
+                st.dataframe(demand_df, use_container_width=True, hide_index=True)
 
 
 # ── Page: Config ──────────────────────────────────────────────────────────────

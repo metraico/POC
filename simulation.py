@@ -16,6 +16,7 @@ from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 import psycopg2
+import sqlalchemy
 import yaml
 import clickhouse_connect
 
@@ -45,11 +46,11 @@ POLICY     = cfg.get('replenishment_policy', 'trailing_avg_28d')
 START_DATE = date.fromisoformat(cfg['start_date'])
 END_DATE   = date.fromisoformat(cfg['end_date'])
 
-STORES    = cfg['stores']
-DCS       = cfg['dcs']
-ITEMS     = cfg['items']
-DC_ASSIGN   = cfg['dc_assignment']
-DC_SUPPLIER = cfg['dc_supplier_assignment']
+STORES    = [str(x) for x in cfg['stores']]
+DCS       = [str(x) for x in cfg['dcs']]
+ITEMS     = [str(x) for x in cfg['items']]
+DC_ASSIGN   = {str(k): [str(s) for s in v] for k, v in cfg['dc_assignment'].items()}
+DC_SUPPLIER = {str(k): str(v) for k, v in cfg['dc_supplier_assignment'].items()}
 
 SMOOTHING_DAYS         = cfg['demand_smoothing_window_days']
 STORE_START_STOCK_DAYS = cfg['store_start_stock_days']
@@ -84,6 +85,16 @@ pg_conn = psycopg2.connect(
     password=os.environ['PG_PASSWORD'],
     sslmode=os.environ.get('PG_SSLMODE', 'prefer')
 )
+_pg_url = sqlalchemy.engine.URL.create(
+    drivername='postgresql+psycopg2',
+    host=os.environ['PG_HOST'],
+    port=int(os.environ.get('PG_PORT', 5432)),
+    database=os.environ['PG_DB'],
+    username=os.environ['PG_USER'],
+    password=os.environ['PG_PASSWORD'],
+    query={'sslmode': os.environ.get('PG_SSLMODE', 'prefer')},
+)
+_pg_engine = sqlalchemy.create_engine(_pg_url)
 
 ch = clickhouse_connect.get_client(
     host=os.environ['CH_HOST'],
@@ -111,9 +122,12 @@ dc_cfg       = {d['dc_id']:       d for d in dc_cfg_list}
 store_cfg    = {s['store_id']:    s for s in store_cfg_list}
 supplier_cfg = {s['supplier_id']: s for s in supplier_cfg_list}
 
-items_df = pd.read_sql("SELECT * FROM items", pg_conn)
+items_df = pd.read_sql("SELECT * FROM items", _pg_engine)
 pg_conn.close()
+_pg_engine.dispose()
 
+items_df = items_df.copy()
+items_df['item_id'] = items_df['item_id'].astype(str)
 velocity_map   = items_df.set_index('item_id')['velocity_class'].to_dict()
 category_map   = items_df.set_index('item_id')['category'].to_dict()
 unit_price_map = {k: float(v) for k, v in items_df.set_index('item_id')['unit_price'].items()}
@@ -129,6 +143,9 @@ print("Loading demand matrix...")
 dm = pd.read_parquet('demand_matrix.parquet')
 if hasattr(dm['date'].iloc[0], 'date'):
     dm['date'] = dm['date'].apply(lambda x: x.date() if hasattr(x, 'date') else x)
+dm = dm.copy()
+dm['store_id'] = dm['store_id'].astype(str)
+dm['item_id']  = dm['item_id'].astype(str)
 
 dm_idx = dm.set_index(['store_id', 'item_id', 'date'])['requested_qty'].to_dict()
 
@@ -185,9 +202,10 @@ counts = {
     'supplier_receipts': 0, 'store_inventory': 0, 'dc_inventory': 0,
 }
 
-po_seq = 0   # PO sequence
-sr_seq = 0   # Store receipt sequence
-so_seq = 0   # Store order sequence
+po_seq      = 0   # PO sequence
+sr_seq      = 0   # Store receipt sequence
+so_seq      = 0   # Store order sequence
+receipt_seq = 0   # Supplier receipt sequence
 
 # ── Weekly sales accumulator ──────────────────────────────────────────────────
 

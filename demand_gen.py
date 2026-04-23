@@ -77,8 +77,8 @@ ps_stores = pd.read_sql(
 )
 conn.close()
 
-stores = sorted(stores_df['store_id'].tolist())
-items  = sorted(items_df['item_id'].tolist())
+stores = sorted(stores_df['store_id'].astype(str).tolist())
+items  = sorted(items_df['item_id'].astype(str).tolist())
 n_stores = len(stores)
 n_items  = len(items)
 
@@ -97,7 +97,7 @@ n_days = len(dates)
 
 baseline = np.zeros((n_stores, n_items), dtype=np.float64)
 
-velocity_map = items_df.set_index('item_id')['velocity_class'].to_dict()
+velocity_map = items_df.assign(item_id=items_df['item_id'].astype(str)).set_index('item_id')['velocity_class'].to_dict()
 
 for si, store in enumerate(stores):
     for ii, item in enumerate(items):
@@ -112,7 +112,7 @@ for si, store in enumerate(stores):
 
 # ── Step 3 — Lifecycle multiplier array ──────────────────────────────────────
 
-lifecycle_map = items_df.set_index('item_id')['lifecycle_profile'].to_dict()
+lifecycle_map = items_df.assign(item_id=items_df['item_id'].astype(str)).set_index('item_id')['lifecycle_profile'].to_dict()
 
 lifecycle_arr = np.ones((n_items, n_days), dtype=np.float64)
 day_indices   = np.arange(n_days, dtype=np.float64)
@@ -177,8 +177,8 @@ date_to_idx = {d: i for i, d in enumerate(dates)}
 
 for _, promo in promos_df.iterrows():
     promo_id_val     = str(promo['promo_id'])
-    promo_item_ids   = pg_items[pg_items['promo_group_id'] == promo['promo_group_id']]['item_id'].tolist()
-    promo_store_ids  = ps_stores[ps_stores['promo_id'] == promo['promo_id']]['store_id'].tolist()
+    promo_item_ids   = pg_items[pg_items['promo_group_id'] == promo['promo_group_id']]['item_id'].astype(str).tolist()
+    promo_store_ids  = ps_stores[ps_stores['promo_id'] == promo['promo_id']]['store_id'].astype(str).tolist()
 
     demand_mult = float(promo['demand_multiplier'])
     decay_days  = int(promo['post_promo_decay_days'])

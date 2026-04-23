@@ -9,7 +9,14 @@
       "Bash(.venv/bin/streamlit run:*)",
       "Bash(.venv/bin/pip show:*)",
       "Bash(.venv/bin/pip install:*)",
-      "Bash(PG_HOST=ep-nameless-wave-anp0c4gp-pooler.c-6.us-east-1.aws.neon.tech PG_PORT=5432 PG_DB=neondb PG_USER=neondb_owner PG_PASSWORD=npg_yBWHjg2vQba1 PG_SSLMODE=require CH_HOST=garsorxycw.ap-south-1.aws.clickhouse.cloud CH_PORT=8443 CH_DB=sim CH_USER=default CH_PASSWORD='kmT6B_cYSZuO8' .venv/bin/python:*)"
+      "Bash(PG_HOST=ep-nameless-wave-anp0c4gp-pooler.c-6.us-east-1.aws.neon.tech PG_PORT=5432 PG_DB=neondb PG_USER=neondb_owner PG_PASSWORD=npg_yBWHjg2vQba1 PG_SSLMODE=require CH_HOST=garsorxycw.ap-south-1.aws.clickhouse.cloud CH_PORT=8443 CH_DB=sim CH_USER=default CH_PASSWORD='kmT6B_cYSZuO8' .venv/bin/python:*)",
+      "Bash(ls -la /Users/niranjan/Metrai/MetraiCo/POC/*.yaml)",
+      "Bash(wc -l /Users/niranjan/Metrai/MetraiCo/POC/sample_data/saltysnack_beverages/*.csv)",
+      "Bash(python3 -c \"import sqlalchemy; print\\(sqlalchemy.__version__\\)\")",
+      "Bash(/Users/niranjan/Metrai/MetraiCo/POC/.venv/bin/python:*)",
+      "Bash(/Users/niranjan/Metrai/MetraiCo/POC/.venv/bin/pip install:*)",
+      "Bash(/Users/niranjan/Metrai/MetraiCo/POC/.venv/bin/pip --version)",
+      "Bash(python3:*)"
     ]
   }
 }

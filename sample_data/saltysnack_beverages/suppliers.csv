@@ -1,0 +1,15 @@
+supplier_id,supplier_name,supplier_country,supplier_region,category
+SUP_001,PepsiCo Inc,US,North America,Beverages & Snacks
+SUP_002,Coca-Cola Company,US,North America,Beverages
+SUP_003,Dr Pepper Snapple Group Inc,US,North America,Beverages
+SUP_004,Arca Continental SAB de CV,MX,North America,Snacks & Beverages
+SUP_005,Herr Foods Inc,US,North America,Snacks
+SUP_006,Utz Quality Foods Inc,US,North America,Snacks
+SUP_007,Snyder's Lance Inc,US,North America,Snacks
+SUP_008,Kellogg Company,US,North America,Snacks
+SUP_009,B&G Foods Inc,US,North America,Snacks
+SUP_010,General Mills,US,North America,Snacks
+SUP_011,Bev Pak Inc,US,North America,Beverages
+SUP_012,Red Bull GmbH,AT,Europe,Beverages
+SUP_013,Reckitt Benckiser PLC,GB,Europe,Grocery
+SUP_014,Private Label,US,North America,Private Label
