@@ -1362,6 +1362,44 @@ def dashboard_page():
         )
 
     @st.cache_data
+    def load_inventory_weekly(sim_id, store_filter, item_filter, w_from, w_to):
+        params = {'sid': sim_id, 'wf': w_from, 'wt': w_to}
+        where_extra = ""
+        if store_filter != "All":
+            where_extra += " AND store_id = %(store)s"
+            params['store'] = store_filter
+        if item_filter != "All":
+            where_extra += " AND item_id = %(item)s"
+            params['item'] = item_filter
+        return client.query_df(
+            "SELECT inventory_week, sum(on_hand_quantity) AS total_on_hand "
+            "FROM store_inventory "
+            f"WHERE simulation_id = %(sid)s{where_extra} "
+            "  AND inventory_week >= %(wf)s AND inventory_week <= %(wt)s "
+            "GROUP BY inventory_week ORDER BY inventory_week",
+            parameters=params
+        )
+
+    @st.cache_data
+    def load_demand_weekly(sim_id, store_filter, item_filter, w_from, w_to):
+        params = {'sid': sim_id, 'wf': w_from, 'wt': w_to}
+        where_extra = ""
+        if store_filter != "All":
+            where_extra += " AND store_id = %(store)s"
+            params['store'] = store_filter
+        if item_filter != "All":
+            where_extra += " AND item_id = %(item)s"
+            params['item'] = item_filter
+        return client.query_df(
+            "SELECT demand_week, sum(demand_qty) AS total_demand "
+            "FROM demand "
+            f"WHERE simulation_id = %(sid)s{where_extra} "
+            "  AND demand_week >= %(wf)s AND demand_week <= %(wt)s "
+            "GROUP BY demand_week ORDER BY demand_week",
+            parameters=params
+        )
+
+    @st.cache_data
     def load_sim_configs(sim_id):
         conn = psycopg2.connect(
             host=os.environ['PG_HOST'], port=os.environ.get('PG_PORT', 5432),
@@ -1440,19 +1478,40 @@ def dashboard_page():
             elif selected_item != "All":
                 title = f"Sales — {selected_item} (all stores)"
 
-            fig = go.Figure(go.Bar(
-                x=sales_df['sales_week'],
-                y=sales_df['total_sales'],
-                marker_color='steelblue',
-                name='Units Sold',
+            demand_df   = load_demand_weekly(selected_sim, selected_store, selected_item, week_from, week_to)
+            inv_df      = load_inventory_weekly(selected_sim, selected_store, selected_item, week_from, week_to)
+            merged = sales_df.merge(demand_df, left_on='sales_week', right_on='demand_week', how='outer').fillna(0)
+            merged['week'] = merged['sales_week'].where(merged['sales_week'] != '', merged['demand_week'])
+            merged = merged.sort_values('week')
+
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                x=merged['week'], y=merged['total_demand'],
+                name='Demand', marker_color='#EF553B', opacity=0.7,
+                yaxis='y1',
             ))
+            fig.add_trace(go.Bar(
+                x=merged['week'], y=merged['total_sales'],
+                name='Sales', marker_color='#636EFA', opacity=0.7,
+                yaxis='y1',
+            ))
+            if not inv_df.empty:
+                fig.add_trace(go.Scatter(
+                    x=inv_df['inventory_week'], y=inv_df['total_on_hand'],
+                    mode='lines+markers', name='On-Hand Inventory',
+                    line=dict(color='#00CC96', width=2),
+                    marker=dict(size=4),
+                    yaxis='y2',
+                ))
             fig.update_layout(
                 title=title,
-                xaxis_title="Week",
-                yaxis_title="Units Sold",
-                height=420,
-                margin=dict(l=40, r=20, t=50, b=60),
-                xaxis=dict(tickangle=-45),
+                xaxis=dict(title="Week", tickangle=-45),
+                yaxis=dict(title="Units (Demand / Sales)"),
+                yaxis2=dict(title="Units (On-Hand Inventory)", overlaying='y', side='right', showgrid=False),
+                barmode='group',
+                height=480,
+                margin=dict(l=40, r=60, t=50, b=60),
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
             )
             st.plotly_chart(fig, use_container_width=True)
 
