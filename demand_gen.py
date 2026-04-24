@@ -58,7 +58,9 @@ ch = clickhouse_connect.get_client(
     database=os.environ['CH_DB'],
     username=os.environ['CH_USER'],
     password=os.environ['CH_PASSWORD'],
-    verify=False
+    verify=False,
+    connect_timeout=60,
+    send_receive_timeout=300,
 )
 
 items_df  = pd.read_sql("SELECT * FROM items", conn)

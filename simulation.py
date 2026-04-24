@@ -102,7 +102,9 @@ ch = clickhouse_connect.get_client(
     database=os.environ['CH_DB'],
     username=os.environ['CH_USER'],
     password=os.environ['CH_PASSWORD'],
-    verify=False
+    verify=False,
+    connect_timeout=60,
+    send_receive_timeout=300,
 )
 
 # ── Read simulation_config and items from NeonDB ──────────────────────────────
@@ -200,6 +202,7 @@ counts = {
     'store_orders': 0, 'store_order_details': 0, 'store_receipts': 0,
     'sales_history': 0, 'supplier_orders': 0, 'supplier_order_details': 0,
     'supplier_receipts': 0, 'store_inventory': 0, 'dc_inventory': 0,
+    'sales_daily': 0, 'store_inventory_daily': 0,
 }
 
 po_seq      = 0   # PO sequence
@@ -217,6 +220,8 @@ supplier_orders_buf        = []
 supplier_order_details_buf = []
 supplier_receipts_buf      = []
 store_receipts_buf         = []
+daily_sales_buf            = []
+daily_inventory_buf        = []
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -441,6 +446,39 @@ while current_date <= END_DATE:
             sold = min(req, oh)
             on_hand[store][item] = max(0, oh - sold)
             weekly_sales[store][item] += sold
+
+            daily_sales_buf.append({
+                'simulation_id': SIM_ID,
+                'account_id':    ACCOUNT_ID,
+                'store_id':      store,
+                'item_id':       item,
+                'sales_date':    current_date,
+                'sales_qty':     float(sold),
+                'sales_amount':  float(sold) * unit_price_map.get(item, 0.0),
+                'unit_price':    unit_price_map.get(item, 0.0),
+                'uom':           'EA',
+            })
+            counts['sales_daily'] += 1
+
+            avg_d  = get_avg_daily(store, item)
+            status = inventory_status_store(store, item, avg_d)
+            daily_inventory_buf.append({
+                'simulation_id':      SIM_ID,
+                'account_id':         ACCOUNT_ID,
+                'store_id':           store,
+                'item_id':            item,
+                'inventory_date':     current_date,
+                'on_hand_quantity':   float(on_hand[store][item]),
+                'available_quantity': float(on_hand[store][item]),
+                'on_order_quantity':  float(on_order[store][item]),
+                'inventory_status':   status,
+            })
+            counts['store_inventory_daily'] += 1
+
+    ch.insert_df('sales_daily',            pd.DataFrame(daily_sales_buf))
+    ch.insert_df('store_inventory_daily',  pd.DataFrame(daily_inventory_buf))
+    daily_sales_buf     = []
+    daily_inventory_buf = []
 
     # ── Step 4: Store order placement (per store's order_cycle_day) ──────────
 

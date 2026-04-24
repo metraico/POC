@@ -43,7 +43,9 @@ def get_ch_client():
         database=os.environ['CH_DB'],
         username=os.environ['CH_USER'],
         password=os.environ['CH_PASSWORD'],
-        verify=False
+        verify=False,
+        connect_timeout=60,
+        send_receive_timeout=300,
     )
 
 _pg_conn = None
@@ -878,6 +880,7 @@ def delete_account(account_id: str):
         'sales_history', 'store_orders', 'store_order_details',
         'store_receipts', 'supplier_orders', 'supplier_order_details',
         'supplier_receipts', 'store_inventory', 'dc_inventory',
+        'sales_daily', 'store_inventory_daily',
     ]
     for sim_id in sim_ids:
         for tbl in ch_tables:
@@ -934,6 +937,7 @@ def delete_simulation(sim_id: str):
         'sales_history', 'store_orders', 'store_order_details',
         'store_receipts', 'supplier_orders', 'supplier_order_details',
         'supplier_receipts', 'store_inventory', 'dc_inventory',
+        'sales_daily', 'store_inventory_daily',
     ]
     for tbl in ch_tables:
         try:
@@ -1382,6 +1386,63 @@ def dashboard_page():
         return row[0] or [], row[1] or [], row[2] or []
 
     @st.cache_data
+    def load_daily_sales(sim_id, store_filter, item_filter, d_from, d_to):
+        params = {'sid': sim_id, 'df': str(d_from), 'dt': str(d_to)}
+        where_extra = ""
+        if store_filter != "All":
+            where_extra += " AND store_id = %(store)s"
+            params['store'] = store_filter
+        if item_filter != "All":
+            where_extra += " AND item_id = %(item)s"
+            params['item'] = item_filter
+        return client.query_df(
+            "SELECT sales_date, sum(sales_qty) AS total_sales "
+            "FROM sales_daily "
+            f"WHERE simulation_id = %(sid)s{where_extra} "
+            "  AND sales_date >= %(df)s AND sales_date <= %(dt)s "
+            "GROUP BY sales_date ORDER BY sales_date",
+            parameters=params
+        )
+
+    @st.cache_data
+    def load_daily_inventory(sim_id, store_filter, item_filter, d_from, d_to):
+        params = {'sid': sim_id, 'df': str(d_from), 'dt': str(d_to)}
+        where_extra = ""
+        if store_filter != "All":
+            where_extra += " AND store_id = %(store)s"
+            params['store'] = store_filter
+        if item_filter != "All":
+            where_extra += " AND item_id = %(item)s"
+            params['item'] = item_filter
+        return client.query_df(
+            "SELECT inventory_date, sum(on_hand_quantity) AS total_inventory "
+            "FROM store_inventory_daily "
+            f"WHERE simulation_id = %(sid)s{where_extra} "
+            "  AND inventory_date >= %(df)s AND inventory_date <= %(dt)s "
+            "GROUP BY inventory_date ORDER BY inventory_date",
+            parameters=params
+        )
+
+    @st.cache_data
+    def load_inventory_weekly(sim_id, store_filter, item_filter, w_from, w_to):
+        params = {'sid': sim_id, 'wf': w_from, 'wt': w_to}
+        where_extra = ""
+        if store_filter != "All":
+            where_extra += " AND store_id = %(store)s"
+            params['store'] = store_filter
+        if item_filter != "All":
+            where_extra += " AND item_id = %(item)s"
+            params['item'] = item_filter
+        return client.query_df(
+            "SELECT inventory_week, sum(on_hand_quantity) AS total_inventory "
+            "FROM store_inventory "
+            f"WHERE simulation_id = %(sid)s{where_extra} "
+            "  AND inventory_week >= %(wf)s AND inventory_week <= %(wt)s "
+            "GROUP BY inventory_week ORDER BY inventory_week",
+            parameters=params
+        )
+
+    @st.cache_data
     def load_demand(sim_id, stores_filter, items_filter, w_from, w_to):
         params = {'sid': sim_id, 'wf': w_from, 'wt': w_to}
         where_extra = ""
@@ -1422,37 +1483,52 @@ def dashboard_page():
         week_from = weeks[week_start_idx]
         week_to   = weeks[week_end_idx]
 
-    tab_sales, tab_config, tab_demand, tab_rerun = st.tabs(["Sales", "Config", "Demand Matrix", "Re-run"])
+    tab_sales, tab_daily, tab_config, tab_demand, tab_rerun = st.tabs(["Sales", "Daily", "Config", "Demand Matrix", "Re-run"])
 
     # ── Tab: Sales ────────────────────────────────────────────────────────────
     with tab_sales:
         with st.spinner("Loading..."):
             sales_df = load_sales(selected_sim, selected_store, selected_item, week_from, week_to)
+            inv_df   = load_inventory_weekly(selected_sim, selected_store, selected_item, week_from, week_to)
 
         if sales_df.empty:
             st.info("No sales data for the selected filters.")
         else:
-            title = "Total Sales — All Stores / All Items"
+            title = "Weekly Sales & Inventory — All Stores / All Items"
             if selected_store != "All" and selected_item != "All":
-                title = f"Sales — {selected_store} / {selected_item}"
+                title = f"Weekly Sales & Inventory — {selected_store} / {selected_item}"
             elif selected_store != "All":
-                title = f"Sales — {selected_store} (all items)"
+                title = f"Weekly Sales & Inventory — {selected_store} (all items)"
             elif selected_item != "All":
-                title = f"Sales — {selected_item} (all stores)"
+                title = f"Weekly Sales & Inventory — {selected_item} (all stores)"
 
-            fig = go.Figure(go.Bar(
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
                 x=sales_df['sales_week'],
                 y=sales_df['total_sales'],
                 marker_color='steelblue',
                 name='Units Sold',
+                yaxis='y1',
+            ))
+            fig.add_trace(go.Scatter(
+                x=inv_df['inventory_week'] if not inv_df.empty else [],
+                y=inv_df['total_inventory'] if not inv_df.empty else [],
+                mode='lines+markers',
+                line=dict(color='orange'),
+                marker=dict(color='orange'),
+                name='Inventory',
+                yaxis='y2',
             ))
             fig.update_layout(
                 title=title,
                 xaxis_title="Week",
-                yaxis_title="Units Sold",
+                yaxis=dict(title="Units Sold"),
+                yaxis2=dict(title="On-Hand Inventory", overlaying='y', side='right',
+                            showgrid=False, rangemode='nonnegative'),
                 height=420,
-                margin=dict(l=40, r=20, t=50, b=60),
+                margin=dict(l=40, r=60, t=50, b=60),
                 xaxis=dict(tickangle=-45),
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -1463,6 +1539,81 @@ def dashboard_page():
             c1.metric("Total Units Sold", f"{total:,}")
             c2.metric("Avg per Week",     f"{avg:,}")
             c3.metric("Peak Week",        f"{peak['sales_week']} ({int(peak['total_sales']):,} units)")
+
+    # ── Tab: Daily ───────────────────────────────────────────────────────────
+    with tab_daily:
+        from datetime import date as _date
+        sim_start = _date.fromisoformat(week_from + "-1") if len(week_from) <= 8 else _date.fromisoformat(week_from[:10])
+        sim_end   = _date.fromisoformat(week_to   + "-7") if len(week_to)   <= 8 else _date.fromisoformat(week_to[:10])
+        try:
+            sim_start = _date.fromisocalendar(int(week_from[:4]), int(week_from[6:]), 1)
+            sim_end   = _date.fromisocalendar(int(week_to[:4]),   int(week_to[6:]),   7)
+        except Exception:
+            pass
+
+        date_range = st.date_input(
+            "Date range",
+            value=(sim_start, sim_end),
+            key="daily_date_range",
+        )
+        if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+            d_from, d_to = date_range
+        else:
+            st.info("Select a start and end date.")
+            d_from = d_to = None
+
+        if d_from and d_to:
+            with st.spinner("Loading daily data..."):
+                daily_sales_df = load_daily_sales(selected_sim, selected_store, selected_item, d_from, d_to)
+                daily_inv_df   = load_daily_inventory(selected_sim, selected_store, selected_item, d_from, d_to)
+
+            if daily_sales_df.empty:
+                st.info("No daily data for the selected filters. Run a simulation first.")
+            else:
+                dtitle = "Daily Sales & Inventory — All Stores / All Items"
+                if selected_store != "All" and selected_item != "All":
+                    dtitle = f"Daily Sales & Inventory — {selected_store} / {selected_item}"
+                elif selected_store != "All":
+                    dtitle = f"Daily Sales & Inventory — {selected_store} (all items)"
+                elif selected_item != "All":
+                    dtitle = f"Daily Sales & Inventory — {selected_item} (all stores)"
+
+                dfig = go.Figure()
+                dfig.add_trace(go.Bar(
+                    x=daily_sales_df['sales_date'],
+                    y=daily_sales_df['total_sales'],
+                    marker_color='steelblue',
+                    name='Units Sold',
+                    yaxis='y1',
+                ))
+                dfig.add_trace(go.Scatter(
+                    x=daily_inv_df['inventory_date'] if not daily_inv_df.empty else [],
+                    y=daily_inv_df['total_inventory'] if not daily_inv_df.empty else [],
+                    mode='lines',
+                    line=dict(color='orange'),
+                    name='Inventory',
+                    yaxis='y2',
+                ))
+                dfig.update_layout(
+                    title=dtitle,
+                    xaxis_title="Date",
+                    yaxis=dict(title="Units Sold"),
+                    yaxis2=dict(title="On-Hand Inventory", overlaying='y', side='right',
+                                showgrid=False, rangemode='nonnegative'),
+                    height=450,
+                    margin=dict(l=40, r=60, t=50, b=60),
+                    xaxis=dict(tickangle=-45),
+                    legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+                )
+                st.plotly_chart(dfig, use_container_width=True)
+
+                total_d = int(daily_sales_df['total_sales'].sum())
+                avg_d   = round(daily_sales_df['total_sales'].mean(), 1)
+                peak_d  = daily_sales_df.loc[daily_sales_df['total_sales'].idxmax()]
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Total Units Sold", f"{total_d:,}")
+                c2.metric("Avg per Day",      f"{avg_d:,}")
+                c3.metric("Peak Day",         f"{peak_d['sales_date']} ({int(peak_d['total_sales']):,} units)")
 
     # ── Tab: Config ───────────────────────────────────────────────────────────
     with tab_config:
