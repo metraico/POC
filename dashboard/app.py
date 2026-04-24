@@ -27,7 +27,9 @@ def safe_int(val, default=0):
         return int(val)
     except (ValueError, TypeError):
         return default
-VENV_PYTHON  = str(Path(__file__).parent.parent / ".venv" / "bin" / "python")
+VENV_PYTHON  = str(Path(__file__).parent.parent / ".venv" / (
+    "Scripts/python.exe" if os.name == "nt" else "bin/python"
+))
 
 st.set_page_config(page_title="Retail Supply Chain Dashboard", layout="wide")
 

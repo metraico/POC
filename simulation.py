@@ -508,29 +508,10 @@ while current_date <= END_DATE:
                     'item_id':         item,
                     'so_number':       so_num,
                     'qty':             ship_qty,
-                    'scheduled_date':  current_date,   # fires next loop iteration
+                    'scheduled_date':  current_date + timedelta(days=1),
                     'is_late':         False,
                     'already_partial': False,
                 })
-
-            unfilled_qty = order_qty - ship_qty
-            if unfilled_qty > 0:
-                # DC stockout — record zero-received receipt immediately
-                sr_seq += 1
-                store_receipts_buf.append({
-                    'receipt_id':         f'SR_{SIM_ID}_{sr_seq:06d}',
-                    'line_number':        ITEM_LINE_NUM[item],
-                    'simulation_id':      SIM_ID,
-                    'account_id':         ACCOUNT_ID,
-                    'store_order_number': so_num,
-                    'store_id':           store,
-                    'item_id':            item,
-                    'receipt_date':       current_date,
-                    'received_quantity':  0.0,
-                    'unfilled_quantity':  float(unfilled_qty),
-                    'receipt_type':       'PARTIAL',
-                })
-                counts['store_receipts'] += 1
 
     if so_rows:
         ch.insert_df('store_orders', pd.DataFrame(so_rows))
