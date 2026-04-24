@@ -1,0 +1,106 @@
+seed: 42
+run_id: DEMO01
+
+# Simulation horizon
+start_date: "2024-01-01"
+end_date: "2024-12-31"
+
+# Network
+stores:
+  - Store_001
+  - Store_002
+  - Store_003
+  - Store_004
+  - Store_005
+  - Store_006
+  - Store_007
+  - Store_008
+  - Store_009
+  - Store_010
+
+dcs:
+  - DC_01
+  - DC_02
+
+dc_assignment:
+  DC_01: [Store_001, Store_002, Store_003, Store_004, Store_005]
+  DC_02: [Store_006, Store_007, Store_008, Store_009, Store_010]
+
+suppliers:
+  - SUP_001
+  - SUP_002
+
+dc_supplier_assignment:
+  DC_01: SUP_001
+  DC_02: SUP_002
+
+# Items
+items:
+  - ITEM_001
+  - ITEM_002
+  - ITEM_003
+  - ITEM_004
+  - ITEM_005
+  - ITEM_006
+  - ITEM_007
+  - ITEM_008
+  - ITEM_009
+  - ITEM_010
+
+# Velocity — medium and slow only
+velocity_mix:
+  medium: 0.60   # 6 items
+  slow: 0.40     # 4 items
+
+# Replenishment
+# Phase 1: trailing_avg_28d  |  Phase 2 option: 4weeks_forward_demand
+replenishment_policy: trailing_avg_28d
+
+store_coverage_days:
+  medium: 10
+  slow: 14
+
+dc_coverage_days: 28
+demand_smoothing_window_days: 28
+dc_review_dow: Monday
+
+# DC profiles (controls lead time and delivery reliability)
+dc_profiles:
+  DC_01:
+    lead_time_min: 3
+    lead_time_max: 7
+    p_late: 0.10
+    late_days_min: 1
+    late_days_max: 3
+    p_partial: 0.08
+    partial_frac_min: 0.70
+    partial_frac_max: 0.90
+    remainder_gap_min: 2
+    remainder_gap_max: 5
+    start_stock_days: 30
+
+  DC_02:
+    lead_time_min: 7
+    lead_time_max: 14
+    p_late: 0.20
+    late_days_min: 2
+    late_days_max: 5
+    p_partial: 0.15
+    partial_frac_min: 0.55
+    partial_frac_max: 0.80
+    remainder_gap_min: 3
+    remainder_gap_max: 7
+    start_stock_days: 18
+
+# Store starting inventory
+store_start_stock_days: 5
+
+# Case pack sizes by item category
+case_pack_sizes:
+  Grocery: 12
+  Apparel: 1
+  default: 6
+
+# Snapshot
+inventory_snapshot_dow: Sunday
+dc_to_store_same_day: true

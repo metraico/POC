@@ -26,7 +26,7 @@ except ImportError:
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--config',     default='config.yaml')
+parser.add_argument('--config',     default='configs/config.yaml')
 parser.add_argument('--sim_id',     required=True)
 parser.add_argument('--account_id', required=True)
 args = parser.parse_args()

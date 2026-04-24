@@ -821,13 +821,11 @@ def new_account_page():
                 st.markdown("**Run simulation**")
                 sim_out = st.empty()
                 if st.button("▶ Run Simulation", type="primary"):
-                    cfg_path   = wz.get('config_path', os.path.join(PROJECT_ROOT, 'config.yaml'))
                     account_id = wz['account']['account_id']
                     sim_id     = wz['account']['sim_id']
-                    with st.spinner("Running simulation.py..."):
-                        rc = run_script('simulation.py',
-                                        ['--config', cfg_path, '--sim_id', sim_id,
-                                         '--account_id', account_id],
+                    with st.spinner("Running simulation..."):
+                        rc = run_script('simulate.py',
+                                        ['--sim_id', sim_id, '--account_id', account_id],
                                         sim_out)
                     if rc == 0:
                         try:
@@ -843,7 +841,7 @@ def new_account_page():
                         wz['sim_done'] = True
                         st.success("Simulation complete!"); st.rerun()
                     else:
-                        st.error("simulation.py failed — check output above.")
+                        st.error("simulate.py failed — check output above.")
 
             if wz.get('sim_done'):
                 st.success("Simulation complete.")
@@ -1248,25 +1246,10 @@ def new_simulation_page():
 
     if ns.get('saved') and not ns.get('sim_done'):
         if col_run.button("▶ Run Simulation", type="primary"):
-            cfg_path = os.path.join(PROJECT_ROOT, f"config_{account_id}.yaml")
-            if not os.path.exists(cfg_path):
-                st.error(f"Config file not found: {cfg_path}.")
-            else:
-                with open(cfg_path) as f:
-                    cfg_dict = yaml.safe_load(f)
-                cfg_dict['run_id']     = ns['sim_id']
-                cfg_dict['seed']       = ns['seed']
-                cfg_dict['start_date'] = ns['start_date']
-                cfg_dict['end_date']   = ns['end_date']
-                new_cfg_path = os.path.join(PROJECT_ROOT, f"config_{ns['sim_id']}.yaml")
-                with open(new_cfg_path, 'w') as f:
-                    yaml.dump(cfg_dict, f, default_flow_style=False)
-
                 ok = True
                 if st.session_state.get('ns_regen_demand'):
                     with st.spinner("Regenerating demand matrix..."):
                         rc_d = run_script('demand_gen.py', [
-                            '--config',     new_cfg_path,
                             '--sim_id',     ns['sim_id'],
                             '--account_id', account_id,
                         ], sim_out)
@@ -1275,10 +1258,9 @@ def new_simulation_page():
                         ok = False
 
                 if ok:
-                    with st.spinner("Running simulation.py..."):
-                        rc = run_script('simulation.py',
-                                        ['--config', new_cfg_path,
-                                         '--sim_id',     ns['sim_id'],
+                    with st.spinner("Running simulation..."):
+                        rc = run_script('simulate.py',
+                                        ['--sim_id',     ns['sim_id'],
                                          '--account_id', account_id],
                                         sim_out)
                     if rc == 0:
@@ -1295,7 +1277,7 @@ def new_simulation_page():
                         ns['sim_done'] = True
                         st.success("Simulation complete!"); st.rerun()
                     else:
-                        st.error("simulation.py failed — check output above.")
+                        st.error("simulate.py failed — check output above.")
 
     if ns.get('sim_done'):
         st.success("Simulation complete.")
@@ -1323,21 +1305,19 @@ def dashboard_page():
 
     @st.cache_data
     def load_filter_options(sim_id):
-        stores = client.query_df(
+        def _col(query, col):
+            df = client.query_df(query, parameters={'sid': sim_id})
+            return df[col].tolist() if col in df.columns and not df.empty else []
+
+        stores = _col(
             "SELECT DISTINCT store_id FROM sales_history "
-            "WHERE simulation_id = %(sid)s ORDER BY store_id",
-            parameters={'sid': sim_id}
-        )['store_id'].tolist()
-        items = client.query_df(
+            "WHERE simulation_id = %(sid)s ORDER BY store_id", 'store_id')
+        items = _col(
             "SELECT DISTINCT item_id FROM sales_history "
-            "WHERE simulation_id = %(sid)s ORDER BY item_id",
-            parameters={'sid': sim_id}
-        )['item_id'].tolist()
-        weeks = client.query_df(
+            "WHERE simulation_id = %(sid)s ORDER BY item_id", 'item_id')
+        weeks = _col(
             "SELECT DISTINCT sales_week FROM sales_history "
-            "WHERE simulation_id = %(sid)s ORDER BY sales_week",
-            parameters={'sid': sim_id}
-        )['sales_week'].tolist()
+            "WHERE simulation_id = %(sid)s ORDER BY sales_week", 'sales_week')
         return stores, items, weeks
 
     @st.cache_data
@@ -1378,6 +1358,25 @@ def dashboard_page():
         if row is None:
             return [], [], []
         return row[0] or [], row[1] or [], row[2] or []
+
+    @st.cache_data
+    def load_inventory(sim_id, store_filter, item_filter, w_from, w_to):
+        params = {'sid': sim_id, 'wf': w_from, 'wt': w_to}
+        where_extra = ""
+        if store_filter != "All":
+            where_extra += " AND store_id = %(store)s"
+            params['store'] = store_filter
+        if item_filter != "All":
+            where_extra += " AND item_id = %(item)s"
+            params['item'] = item_filter
+        return client.query_df(
+            "SELECT inventory_week, sum(on_hand_quantity) AS total_inventory "
+            "FROM store_inventory "
+            f"WHERE simulation_id = %(sid)s{where_extra} "
+            "  AND inventory_week >= %(wf)s AND inventory_week <= %(wt)s "
+            "GROUP BY inventory_week ORDER BY inventory_week",
+            parameters=params
+        )
 
     @st.cache_data
     def load_demand(sim_id, stores_filter, items_filter, w_from, w_to):
@@ -1426,6 +1425,7 @@ def dashboard_page():
     with tab_sales:
         with st.spinner("Loading..."):
             sales_df = load_sales(selected_sim, selected_store, selected_item, week_from, week_to)
+            inv_df   = load_inventory(selected_sim, selected_store, selected_item, week_from, week_to)
 
         if sales_df.empty:
             st.info("No sales data for the selected filters.")
@@ -1444,6 +1444,26 @@ def dashboard_page():
                 marker_color='steelblue',
                 name='Units Sold',
             ))
+
+            if not inv_df.empty:
+                fig.add_trace(go.Scatter(
+                    x=inv_df['inventory_week'],
+                    y=inv_df['total_inventory'],
+                    mode='lines+markers',
+                    name='Inventory (on-hand)',
+                    line=dict(color='orange', width=2),
+                    marker=dict(size=4),
+                    yaxis='y2',
+                ))
+                fig.update_layout(
+                    yaxis2=dict(
+                        title="Inventory (units)",
+                        overlaying='y',
+                        side='right',
+                        showgrid=False,
+                    )
+                )
+
             fig.update_layout(
                 title=title,
                 xaxis_title="Week",
@@ -1451,6 +1471,7 @@ def dashboard_page():
                 height=420,
                 margin=dict(l=40, r=20, t=50, b=60),
                 xaxis=dict(tickangle=-45),
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -1558,65 +1579,52 @@ def dashboard_page():
             if not rr_name.strip():
                 st.error("Simulation name is required.")
             else:
-                cfg_path = os.path.join(PROJECT_ROOT, f"config_{account_id}.yaml")
-                if not os.path.exists(cfg_path):
-                    st.error(f"Config file not found: {cfg_path}")
-                else:
-                    try:
-                        # 1. Create new simulation_config row with edited configs
-                        new_sim_id = str(uuid.uuid4())
+                try:
+                    # 1. Create new simulation_config row with edited configs
+                    new_sim_id = str(uuid.uuid4())
+                    cur = get_pg().cursor()
+                    cur.execute("""
+                        INSERT INTO simulation_config
+                          (simulation_id, account_id, simulation_name, config_name,
+                           created_at, simulation_status, start_week, end_week, random_seed,
+                           dc_configs, store_configs, supplier_configs)
+                        SELECT %s, account_id, %s, config_name,
+                               current_date, 'PENDING', start_week, end_week, random_seed,
+                               %s::jsonb, %s::jsonb, %s::jsonb
+                        FROM simulation_config WHERE simulation_id = %s
+                    """, (new_sim_id, rr_name.strip(),
+                          json.dumps(rr_dc_edited.to_dict('records')  if not rr_dc_edited.empty  else []),
+                          json.dumps(rr_st_edited.to_dict('records')  if not rr_st_edited.empty  else []),
+                          json.dumps(rr_sup_edited.to_dict('records') if not rr_sup_edited.empty else []),
+                          selected_sim))
+                    get_pg().commit(); cur.close()
+
+                    # 2. Run simulation (demand_matrix.parquet already on disk)
+                    with st.spinner("Running simulation..."):
+                        rc = run_script('simulate.py',
+                                        ['--sim_id',     new_sim_id,
+                                         '--account_id', account_id],
+                                        rr_out)
+                    if rc == 0:
                         cur = get_pg().cursor()
-                        cur.execute("""
-                            INSERT INTO simulation_config
-                              (simulation_id, account_id, simulation_name, config_name,
-                               created_at, simulation_status, start_week, end_week, random_seed,
-                               dc_configs, store_configs, supplier_configs)
-                            SELECT %s, account_id, %s, config_name,
-                                   current_date, 'PENDING', start_week, end_week, random_seed,
-                                   %s::jsonb, %s::jsonb, %s::jsonb
-                            FROM simulation_config WHERE simulation_id = %s
-                        """, (new_sim_id, rr_name.strip(),
-                              json.dumps(rr_dc_edited.to_dict('records')  if not rr_dc_edited.empty  else []),
-                              json.dumps(rr_st_edited.to_dict('records')  if not rr_st_edited.empty  else []),
-                              json.dumps(rr_sup_edited.to_dict('records') if not rr_sup_edited.empty else []),
-                              selected_sim))
+                        cur.execute(
+                            "UPDATE simulation_config SET simulation_status='COMPLETED', "
+                            "simulation_run_date=%s WHERE simulation_id=%s",
+                            (date.today(), new_sim_id)
+                        )
                         get_pg().commit(); cur.close()
-
-                        # 2. Write updated config yaml with new sim id
-                        with open(cfg_path) as f:
-                            cfg_dict = yaml.safe_load(f)
-                        cfg_dict['run_id'] = new_sim_id
-                        new_cfg_path = os.path.join(PROJECT_ROOT, f"config_{new_sim_id}.yaml")
-                        with open(new_cfg_path, 'w') as f:
-                            yaml.dump(cfg_dict, f, default_flow_style=False)
-
-                        # 3. Run simulation (demand_matrix.parquet already on disk)
-                        with st.spinner("Running simulation.py..."):
-                            rc = run_script('simulation.py',
-                                            ['--config', new_cfg_path,
-                                             '--sim_id',     new_sim_id,
-                                             '--account_id', account_id],
-                                            rr_out)
-                        if rc == 0:
-                            cur = get_pg().cursor()
-                            cur.execute(
-                                "UPDATE simulation_config SET simulation_status='COMPLETED', "
-                                "simulation_run_date=%s WHERE simulation_id=%s",
-                                (date.today(), new_sim_id)
-                            )
-                            get_pg().commit(); cur.close()
-                            st.success(f"Re-run complete! New simulation: `{new_sim_id}`")
-                            # Navigate to new simulation's dashboard
-                            st.session_state.simulation = {'id': new_sim_id, 'name': rr_name.strip()}
-                            st.rerun()
-                        else:
-                            try: get_pg().rollback()
-                            except Exception: pass
-                            st.error("simulation.py failed — check output above.")
-                    except Exception as e:
+                        st.success(f"Re-run complete! New simulation: `{new_sim_id}`")
+                        # Navigate to new simulation's dashboard
+                        st.session_state.simulation = {'id': new_sim_id, 'name': rr_name.strip()}
+                        st.rerun()
+                    else:
                         try: get_pg().rollback()
                         except Exception: pass
-                        st.error(f"Error: {e}")
+                        st.error("simulate.py failed — check output above.")
+                except Exception as e:
+                    try: get_pg().rollback()
+                    except Exception: pass
+                    st.error(f"Error: {e}")
 
 
 # ── Page: Config ──────────────────────────────────────────────────────────────
