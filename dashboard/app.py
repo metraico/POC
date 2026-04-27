@@ -1424,6 +1424,25 @@ def dashboard_page():
         )
 
     @st.cache_data
+    def load_daily_demand(sim_id, store_filter, item_filter, d_from, d_to):
+        params = {'sid': sim_id, 'df': str(d_from), 'dt': str(d_to)}
+        where_extra = ""
+        if store_filter != "All":
+            where_extra += " AND store_id = %(store)s"
+            params['store'] = store_filter
+        if item_filter != "All":
+            where_extra += " AND item_id = %(item)s"
+            params['item'] = item_filter
+        return client.query_df(
+            "SELECT demand_date, sum(demand_qty) AS total_demand "
+            "FROM demand "
+            f"WHERE simulation_id = %(sid)s{where_extra} "
+            "  AND demand_date >= %(df)s AND demand_date <= %(dt)s "
+            "GROUP BY demand_date ORDER BY demand_date",
+            parameters=params
+        )
+
+    @st.cache_data
     def load_inventory_weekly(sim_id, store_filter, item_filter, w_from, w_to):
         params = {'sid': sim_id, 'wf': w_from, 'wt': w_to}
         where_extra = ""
@@ -1565,7 +1584,8 @@ def dashboard_page():
         if d_from and d_to:
             with st.spinner("Loading daily data..."):
                 daily_sales_df = load_daily_sales(selected_sim, selected_store, selected_item, d_from, d_to)
-                daily_inv_df   = load_daily_inventory(selected_sim, selected_store, selected_item, d_from, d_to)
+                daily_inv_df    = load_daily_inventory(selected_sim, selected_store, selected_item, d_from, d_to)
+                daily_demand_df = load_daily_demand(selected_sim, selected_store, selected_item, d_from, d_to)
 
             if daily_sales_df.empty:
                 st.info("No daily data for the selected filters. Run a simulation first.")
@@ -1579,6 +1599,13 @@ def dashboard_page():
                     dtitle = f"Daily Sales & Inventory — {selected_item} (all stores)"
 
                 dfig = go.Figure()
+                dfig.add_trace(go.Bar(
+                    x=daily_demand_df['demand_date'] if not daily_demand_df.empty else [],
+                    y=daily_demand_df['total_demand'] if not daily_demand_df.empty else [],
+                    marker_color='grey',
+                    name='Demand',
+                    yaxis='y1',
+                ))
                 dfig.add_trace(go.Bar(
                     x=daily_sales_df['sales_date'],
                     y=daily_sales_df['total_sales'],
@@ -1597,7 +1624,8 @@ def dashboard_page():
                 dfig.update_layout(
                     title=dtitle,
                     xaxis_title="Date",
-                    yaxis=dict(title="Units Sold"),
+                    barmode='group',
+                    yaxis=dict(title="Units"),
                     yaxis2=dict(title="On-Hand Inventory", overlaying='y', side='right',
                                 showgrid=False, rangemode='nonnegative'),
                     height=450,

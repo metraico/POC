@@ -1,0 +1,4 @@
+item_id,item_description,uom,item_status,category,subcategory,brand,unit_cost,unit_price,velocity_class,lifecycle_profile,case_pack_size,size_group,size_rank,is_ecomm_eligible
+2840016014,FRITO LAY CLASSIC,EA,ACTIVE,Salty Snacks,POTATO CHIPS,LAYS,2.50,4.99,FAST,steady,12,STD,1,FALSE
+1200080994,PEPSI COLA FRIDGE PAK,EA,ACTIVE,Carbonated Soft Drinks,12 Pack,PEPSI,4.50,7.99,FAST,steady,4,STD,1,FALSE
+4900005010,COKE CLASSIC 2LTR,EA,ACTIVE,Carbonated Soft Drinks,2 LTR,COCA COLA,0.90,1.99,FAST,steady,6,STD,1,FALSE
