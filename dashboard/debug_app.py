@@ -33,14 +33,17 @@ dataset = st.sidebar.selectbox(
 DATA_DIR = SAMPLE_DATA_ROOT / dataset
 
 start_date = st.sidebar.date_input("Start Date", value=date(2024, 1, 1))
-end_date   = st.sidebar.date_input("End Date",   value=date(2024, 3, 31))
+end_date   = st.sidebar.date_input("End Date",   value=date(2024, 12, 31))
 
 replenishment_policy = st.sidebar.selectbox(
     "Replenishment Policy",
     ["trailing_avg_28d", "promo_aware_7d", "baseline_only"],
 )
 
-smoothing_days = st.sidebar.number_input("Demand Smoothing Window (days)", min_value=7, max_value=90, value=28)
+import re as _re
+_policy_day_match = _re.search(r"(\d+)d", replenishment_policy)
+_default_smoothing = int(_policy_day_match.group(1)) if _policy_day_match else 28
+smoothing_days = st.sidebar.number_input("Demand Smoothing Window (days)", min_value=7, max_value=90, value=_default_smoothing)
 
 st.sidebar.subheader("Store Config")
 store_reorder_weeks  = st.sidebar.slider("Store Reorder Point (weeks of cover)", 0.5, 4.0, 1.5, 0.5)
@@ -741,6 +744,10 @@ if run_btn:
     fig_daily.add_trace(go.Bar(
         x=s_sales['date'], y=s_sales['sales_qty'],
         name='Sales', marker_color='#2E86AB', opacity=0.9,
+    ))
+    fig_daily.add_trace(go.Bar(
+        x=s_sales['date'], y=s_sales['lost_sales_qty'],
+        name='Lost Sales', marker_color='#FF6B6B', opacity=0.85,
     ))
     fig_daily.add_trace(go.Scatter(
         x=s_inv['date'], y=s_inv['on_hand_qty'],
