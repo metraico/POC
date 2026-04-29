@@ -46,16 +46,14 @@ _default_smoothing = int(_policy_day_match.group(1)) if _policy_day_match else 2
 smoothing_days = st.sidebar.number_input("Demand Smoothing Window (days)", min_value=7, max_value=90, value=_default_smoothing)
 
 st.sidebar.subheader("Store Config")
-store_reorder_weeks  = st.sidebar.slider("Store Reorder Point (weeks of cover)", 0.5, 4.0, 1.5, 0.5)
-store_target_weeks   = st.sidebar.slider("Store Target Stock (weeks)",           1.0, 8.0, 3.0, 0.5)
-store_woc_threshold  = st.sidebar.slider("Store LOW-stock WOC threshold",        0.5, 3.0, 1.0, 0.5)
+store_reorder_weeks  = st.sidebar.slider("Min Inventory Trigger (weeks of cover)", 1, 4, 2, 1)
+store_target_weeks   = st.sidebar.slider("Store Target Stock (weeks)",           1, 8, 3, 1)
 store_start_days     = st.sidebar.number_input("Store Starting Stock (days)", min_value=1, max_value=60, value=14)
 store_order_dow      = st.sidebar.selectbox("Store Order Day", ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY"], index=0)
 
 st.sidebar.subheader("DC Config")
-dc_reorder_weeks     = st.sidebar.slider("DC Reorder Point (weeks of cover)", 1.0, 6.0, 2.0, 0.5)
-dc_target_weeks      = st.sidebar.slider("DC Target Stock (weeks)",           2.0, 12.0, 5.0, 0.5)
-dc_woc_threshold     = st.sidebar.slider("DC LOW-stock WOC threshold",        0.5, 3.0, 1.0, 0.5)
+dc_reorder_weeks     = st.sidebar.slider("DC Reorder Point (weeks of cover)", 1, 6, 2, 1)
+dc_target_weeks      = st.sidebar.slider("DC Target Stock (weeks)",           2, 12, 5, 1)
 dc_start_days        = st.sidebar.number_input("DC Starting Stock (days)", min_value=1, max_value=90, value=30)
 dc_review_dow        = st.sidebar.selectbox("DC Review Day", ["MONDAY","TUESDAY","WEDNESDAY","THURSDAY","FRIDAY"], index=0)
 
@@ -113,8 +111,8 @@ def run_simulation(
     promos_df, promo_group_items_df, promo_stores_df,
     start_date, end_date,
     policy, smoothing_days,
-    store_reorder_weeks, store_target_weeks, store_woc_threshold, store_start_days, store_order_dow,
-    dc_reorder_weeks, dc_target_weeks, dc_woc_threshold, dc_start_days, dc_review_dow,
+    store_reorder_weeks, store_target_weeks, store_start_days, store_order_dow,
+    dc_reorder_weeks, dc_target_weeks, dc_start_days, dc_review_dow,
     sup_lead_min, sup_lead_max, sup_on_time, sup_partial,
     dc_on_time, dc_partial,
     seed,
@@ -461,7 +459,7 @@ def run_simulation(
 
                 avg_d  = get_avg_daily(store, item)
                 woc    = (on_hand[store][item] / (avg_d * 7.0)) if avg_d > 0 else 999
-                status = 'ZERO' if on_hand[store][item] == 0 else ('LOW' if woc < store_woc_threshold else 'AVAILABLE')
+                status = 'ZERO' if on_hand[store][item] == 0 else ('LOW' if woc < store_reorder_weeks else 'AVAILABLE')
 
                 daily_sales_buf.append({
                     'store_id': store, 'item_id': item, 'date': current_date,
@@ -618,10 +616,10 @@ if run_btn:
             start_date=start_date, end_date=end_date,
             policy=replenishment_policy, smoothing_days=int(smoothing_days),
             store_reorder_weeks=store_reorder_weeks, store_target_weeks=store_target_weeks,
-            store_woc_threshold=store_woc_threshold, store_start_days=int(store_start_days),
+            store_start_days=int(store_start_days),
             store_order_dow=store_order_dow,
             dc_reorder_weeks=dc_reorder_weeks, dc_target_weeks=dc_target_weeks,
-            dc_woc_threshold=dc_woc_threshold, dc_start_days=int(dc_start_days),
+            dc_start_days=int(dc_start_days),
             dc_review_dow=dc_review_dow,
             sup_lead_min=int(sup_lead_min), sup_lead_max=int(sup_lead_max),
             sup_on_time=sup_on_time, sup_partial=sup_partial,
@@ -663,6 +661,13 @@ if run_btn:
 
     s_inv['date']   = pd.to_datetime(s_inv['date'])
     s_sales['date'] = pd.to_datetime(s_sales['date'])
+
+    # ── Min Inventory Trigger info ───────────────────────────────────────────
+    avg_daily = s_sales['demand_qty'].mean() if not s_sales.empty else 0
+    trigger_units = int(round(store_reorder_weeks * avg_daily * 7))
+    target_units  = int(round(store_target_weeks * avg_daily * 7))
+    st.caption(f"Min Inventory Trigger = **{store_reorder_weeks} weeks × {avg_daily:.1f} units/day × 7 = {trigger_units} units** — order fires when stock drops below this.")
+    st.caption(f"Store Target Stock = **{store_target_weeks} weeks × {avg_daily:.1f} units/day × 7 = {target_units} units** — stock is replenished up to this level.")
 
     # ── KPI summary (filtered to selected store + item) ───────────────────────
     st.subheader(f"KPI — {sel_store} / {sel_item_label}")
@@ -737,34 +742,50 @@ if run_btn:
     st.markdown("#### Daily: Demand vs Sales vs Inventory")
     fig_daily = go.Figure()
 
+    s_daily = s_sales.merge(s_inv[['date', 'on_hand_qty']], on='date', how='left')
+    lost_colors = ['#db5546' if oh == 0 else '#F1948A' for oh in s_daily['on_hand_qty']]
+    day_labels = s_daily['date'].dt.strftime('%a, %b %d %Y')
+    inv_day_labels = s_inv['date'].dt.strftime('%a, %b %d %Y')
+
     fig_daily.add_trace(go.Bar(
-        x=s_sales['date'], y=s_sales['demand_qty'],
+        x=s_daily['date'], y=s_daily['demand_qty'],
         name='Demand', marker_color='#BAD7F2', opacity=0.85,
+        hovertemplate='<b>%{customdata}</b><br>Demand: %{y}<extra></extra>',
+        customdata=day_labels,
     ))
     fig_daily.add_trace(go.Bar(
-        x=s_sales['date'], y=s_sales['sales_qty'],
-        name='Sales', marker_color='#2E86AB', opacity=0.9,
+        x=s_daily['date'], y=s_daily['sales_qty'],
+        name='Sales (Fulfilled)', marker_color='#2E86AB', opacity=0.9,
+        hovertemplate='<b>%{customdata}</b><br>Sales: %{y}<extra></extra>',
+        customdata=day_labels,
     ))
     fig_daily.add_trace(go.Bar(
-        x=s_sales['date'], y=s_sales['lost_sales_qty'],
-        name='Lost Sales', marker_color='#FF6B6B', opacity=0.85,
+        x=s_daily['date'], y=s_daily['lost_sales_qty'],
+        name='Lost Sales (Unmet Demand)',
+        marker_color=lost_colors, opacity=0.9,
+        hovertemplate='<b>%{customdata}</b><br>Lost Sales: %{y}<extra></extra>',
+        customdata=day_labels,
     ))
     fig_daily.add_trace(go.Scatter(
         x=s_inv['date'], y=s_inv['on_hand_qty'],
         name='On-Hand Inventory', mode='lines',
         line=dict(color='#E84855', width=2),
         yaxis='y2',
+        hovertemplate='<b>%{customdata}</b><br>On-Hand: %{y}<extra></extra>',
+        customdata=inv_day_labels,
     ))
     fig_daily.add_trace(go.Scatter(
         x=s_inv['date'], y=s_inv['on_order_qty'],
         name='On-Order', mode='lines',
+        hovertemplate='<b>%{customdata}</b><br>On-Order: %{y}<extra></extra>',
+        customdata=inv_day_labels,
         line=dict(color='#F4A261', width=1.5, dash='dot'),
         yaxis='y2',
     ))
 
     add_promo_shading_daily(fig_daily)
     fig_daily.update_layout(
-        barmode='overlay',
+        barmode='group',
         xaxis=dict(title='Date'),
         yaxis=dict(title='Units (Demand / Sales)', side='left'),
         yaxis2=dict(title='Units (Inventory)', overlaying='y', side='right', showgrid=False),
@@ -810,7 +831,7 @@ if run_btn:
 
     add_promo_shading_weekly(fig_weekly, weekly_df['week'].tolist())
     fig_weekly.update_layout(
-        barmode='overlay',
+        barmode='group',
         xaxis=dict(title='Week', tickangle=-45),
         yaxis=dict(title='Units (Demand / Sales)', side='left'),
         yaxis2=dict(title='Avg Units (Inventory)', overlaying='y', side='right', showgrid=False),
