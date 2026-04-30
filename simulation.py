@@ -541,12 +541,13 @@ while current_date <= END_DATE:
 
             if ship_qty > 0:
                 on_order[store][item] += ship_qty
+                transit_days = dc_cfg[dc_id].get('transit_days', 2)
                 store_receipt_schedule.append({
                     'store_id':        store,
                     'item_id':         item,
                     'so_number':       so_num,
                     'qty':             ship_qty,
-                    'scheduled_date':  current_date + timedelta(days=1),
+                    'scheduled_date':  current_date + timedelta(days=transit_days),
                     'is_late':         False,
                     'already_partial': False,
                 })

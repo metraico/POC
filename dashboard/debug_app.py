@@ -4,8 +4,10 @@ Runs supply-chain simulation from sample_data CSVs, no database required.
 Outputs are saved to output/<run_id>/ as CSVs.
 """
 
+import io
 import math
 import uuid
+import zipfile
 from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
@@ -64,6 +66,7 @@ sup_on_time    = st.sidebar.slider("Supplier On-Time Rate", 0.5, 1.0, 0.90, 0.05
 sup_partial    = st.sidebar.slider("Supplier Partial Delivery Rate", 0.0, 0.5, 0.10, 0.05)
 
 st.sidebar.subheader("DC → Store Config")
+dc_store_lead_days = st.sidebar.number_input("DC → Store Lead Time (days)", min_value=1, max_value=14, value=2)
 dc_on_time   = st.sidebar.slider("DC On-Time Rate", 0.5, 1.0, 0.95, 0.05)
 dc_partial   = st.sidebar.slider("DC Partial Delivery Rate", 0.0, 0.3, 0.05, 0.05)
 
@@ -114,7 +117,7 @@ def run_simulation(
     store_reorder_weeks, store_target_weeks, store_start_days, store_order_dow,
     dc_reorder_weeks, dc_target_weeks, dc_start_days, dc_review_dow,
     sup_lead_min, sup_lead_max, sup_on_time, sup_partial,
-    dc_on_time, dc_partial,
+    dc_on_time, dc_partial, dc_store_lead_days,
     seed,
 ):
     rng = np.random.default_rng(int(seed))
@@ -498,7 +501,7 @@ def run_simulation(
                     on_order[store][item] += ship
                     store_receipt_schedule.append({
                         'store_id': store, 'item_id': item, 'so_number': so_num,
-                        'qty': ship, 'scheduled_date': current_date + timedelta(days=1),
+                        'qty': ship, 'scheduled_date': current_date + timedelta(days=int(dc_store_lead_days)),
                         'is_late': False, 'already_partial': False,
                     })
 
@@ -587,15 +590,17 @@ def run_simulation(
     progress.progress(1.0, text="Simulation complete!")
 
     # -- Assemble output dataframes -------------------------------------------
-    sales_df      = pd.DataFrame(daily_sales_buf)
-    inv_df        = pd.DataFrame(daily_inv_buf)
-    sup_rec_df    = pd.DataFrame(supplier_receipts_buf) if supplier_receipts_buf else pd.DataFrame()
-    str_rec_df    = pd.DataFrame(store_receipts_buf)    if store_receipts_buf    else pd.DataFrame()
-    sup_orders_df = pd.DataFrame(supplier_orders_buf)   if supplier_orders_buf   else pd.DataFrame()
-    str_orders_df = pd.DataFrame(store_orders_buf)      if store_orders_buf      else pd.DataFrame()
-    store_od_df   = pd.DataFrame(store_od_buf)          if store_od_buf          else pd.DataFrame()
+    sales_df        = pd.DataFrame(daily_sales_buf)
+    inv_df          = pd.DataFrame(daily_inv_buf)
+    sup_rec_df      = pd.DataFrame(supplier_receipts_buf) if supplier_receipts_buf else pd.DataFrame()
+    str_rec_df      = pd.DataFrame(store_receipts_buf)    if store_receipts_buf    else pd.DataFrame()
+    sup_orders_df   = pd.DataFrame(supplier_orders_buf)   if supplier_orders_buf   else pd.DataFrame()
+    supplier_od_df  = pd.DataFrame(supplier_od_buf)       if supplier_od_buf       else pd.DataFrame()
+    str_orders_df   = pd.DataFrame(store_orders_buf)      if store_orders_buf      else pd.DataFrame()
+    store_od_df     = pd.DataFrame(store_od_buf)          if store_od_buf          else pd.DataFrame()
 
-    return demand_df, sales_df, inv_df, sup_rec_df, str_rec_df, sup_orders_df, str_orders_df, store_od_df, dict(STORE_DC)
+    return (demand_df, sales_df, inv_df, sup_rec_df, str_rec_df,
+            sup_orders_df, supplier_od_df, str_orders_df, store_od_df, dict(STORE_DC))
 
 
 # ── Run ───────────────────────────────────────────────────────────────────────
@@ -608,8 +613,8 @@ if run_btn:
     with st.spinner("Running simulation…"):
         (demand_df, sales_df, inv_df,
          sup_rec_df, str_rec_df,
-         sup_orders_df, str_orders_df,
-         store_od_df, store_dc_map) = run_simulation(
+         sup_orders_df, supplier_od_df,
+         str_orders_df, store_od_df, store_dc_map) = run_simulation(
             items_df, stores_df, dcs_df, supplier_items_df,
             store_mappings_df, dc_mappings_df,
             promos_df, promo_group_items_df, promo_stores_df,
@@ -624,6 +629,7 @@ if run_btn:
             sup_lead_min=int(sup_lead_min), sup_lead_max=int(sup_lead_max),
             sup_on_time=sup_on_time, sup_partial=sup_partial,
             dc_on_time=dc_on_time, dc_partial=dc_partial,
+            dc_store_lead_days=int(dc_store_lead_days),
             seed=seed,
         )
 
@@ -641,6 +647,26 @@ if run_btn:
     if not str_orders_df.empty:str_orders_df.to_csv(out_dir / "store_orders.csv",       index=False)
 
     st.success(f"Outputs saved to `output/{run_id}/`")
+    st.session_state['sim_results'] = dict(
+        demand_df=demand_df, sales_df=sales_df, inv_df=inv_df,
+        sup_rec_df=sup_rec_df, str_rec_df=str_rec_df,
+        sup_orders_df=sup_orders_df, supplier_od_df=supplier_od_df,
+        str_orders_df=str_orders_df, store_od_df=store_od_df,
+        store_dc_map=store_dc_map,
+    )
+
+if 'sim_results' in st.session_state:
+    _r = st.session_state['sim_results']
+    demand_df      = _r['demand_df']
+    sales_df       = _r['sales_df']
+    inv_df         = _r['inv_df']
+    sup_rec_df     = _r['sup_rec_df']
+    str_rec_df     = _r['str_rec_df']
+    sup_orders_df  = _r['sup_orders_df']
+    supplier_od_df = _r['supplier_od_df']
+    str_orders_df  = _r['str_orders_df']
+    store_od_df    = _r['store_od_df']
+    store_dc_map   = _r['store_dc_map']
 
     # ── Store / Item selectors (drives everything below) ─────────────────────
     st.divider()
@@ -662,12 +688,44 @@ if run_btn:
     s_inv['date']   = pd.to_datetime(s_inv['date'])
     s_sales['date'] = pd.to_datetime(s_sales['date'])
 
-    # ── Min Inventory Trigger info ───────────────────────────────────────────
-    avg_daily = s_sales['demand_qty'].mean() if not s_sales.empty else 0
-    trigger_units = int(round(store_reorder_weeks * avg_daily * 7))
-    target_units  = int(round(store_target_weeks * avg_daily * 7))
-    st.caption(f"Min Inventory Trigger = **{store_reorder_weeks} weeks × {avg_daily:.1f} units/day × 7 = {trigger_units} units** — order fires when stock drops below this.")
-    st.caption(f"Store Target Stock = **{store_target_weeks} weeks × {avg_daily:.1f} units/day × 7 = {target_units} units** — stock is replenished up to this level.")
+    # ── Min Inventory Trigger info — policy-aware ────────────────────────────
+    # Baseline avg: mean of first smoothing_days days of demand (matches simulation init)
+    first_n      = min(int(smoothing_days), len(s_demand))
+    baseline_avg = float(s_demand['demand_qty'].iloc[:first_n].mean()) if first_n > 0 else 0.0
+    overall_avg  = float(s_sales['demand_qty'].mean()) if not s_sales.empty else 0.0
+
+    if replenishment_policy == 'baseline_only':
+        trigger_units = int(round(store_reorder_weeks * baseline_avg * 7))
+        target_units  = int(round(store_target_weeks  * baseline_avg * 7))
+        st.caption(
+            f"**Policy: baseline_only** — trigger is static throughout the simulation. "
+            f"Min Inventory Trigger = **{store_reorder_weeks} wks × {baseline_avg:.1f} units/day × 7 = {trigger_units} units**. "
+            f"Target Stock = **{store_target_weeks} wks × {baseline_avg:.1f} units/day × 7 = {target_units} units**."
+        )
+
+    elif replenishment_policy == 'trailing_avg_28d':
+        trigger_early = int(round(store_reorder_weeks * baseline_avg * 7))
+        target_early  = int(round(store_target_weeks  * baseline_avg * 7))
+        trigger_later = int(round(store_reorder_weeks * overall_avg  * 7))
+        target_later  = int(round(store_target_weeks  * overall_avg  * 7))
+        st.caption(
+            f"**Policy: trailing_{smoothing_days}d avg** — trigger **evolves** as demand history builds. "
+            f"Early simulation (first {smoothing_days} days): ~**{trigger_early} units** trigger / **{target_early} units** target "
+            f"(avg {baseline_avg:.1f}/day). "
+            f"Full-year avg: ~**{trigger_later} units** trigger / **{target_later} units** target "
+            f"(avg {overall_avg:.1f}/day). Formula: weeks × rolling_avg_daily × 7."
+        )
+
+    elif replenishment_policy == 'promo_aware_7d':
+        trigger_std = int(round(store_reorder_weeks * baseline_avg * 7))
+        target_std  = int(round(store_target_weeks  * baseline_avg * 7))
+        st.caption(
+            f"**Policy: promo_aware_7d** — two different triggers apply. "
+            f"**Standard items**: Min Trigger ~**{trigger_std} units** / Target ~**{target_std} units** "
+            f"(trailing {smoothing_days}-day avg, {baseline_avg:.1f} units/day). "
+            f"**Promo items**: weeks-of-cover formula is bypassed — orders cover the full next 7 days of promo demand. "
+            f"Emergency restock fires daily if stock = 0 during an active promo."
+        )
 
     # ── KPI summary (filtered to selected store + item) ───────────────────────
     st.subheader(f"KPI — {sel_store} / {sel_item_label}")
@@ -942,5 +1000,117 @@ if run_btn:
             filt   = sup_orders_df[sup_orders_df['dc_id'] == sel_dc] if sel_dc else sup_orders_df
             st.dataframe(filt.reset_index(drop=True))
 
+    # ── Download buttons ──────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Download Data")
+
+    def build_zip(filter_store=None, filter_item=None):
+        sel_dc_dl = store_dc_map.get(filter_store) if filter_store else None
+
+        # Resolve supplier for the selected DC
+        sel_supplier_dl = None
+        if sel_dc_dl is not None and not sup_orders_df.empty and 'supplier_id' in sup_orders_df.columns:
+            dc_sup = sup_orders_df[sup_orders_df['dc_id'] == sel_dc_dl]['supplier_id']
+            if not dc_sup.empty:
+                sel_supplier_dl = dc_sup.iloc[0]
+
+        def f_store(df):
+            if df is None or df.empty or not filter_store:
+                return df if df is not None else pd.DataFrame()
+            return df[df['store_id'] == filter_store] if 'store_id' in df.columns else df
+
+        def f_item(df):
+            if df is None or df.empty or not filter_item:
+                return df if df is not None else pd.DataFrame()
+            return df[df['item_id'] == filter_item] if 'item_id' in df.columns else df
+
+        def f_dc(df):
+            if df is None or df.empty or not sel_dc_dl:
+                return df if df is not None else pd.DataFrame()
+            return df[df['dc_id'] == sel_dc_dl] if 'dc_id' in df.columns else df
+
+        # CalendarPeriod — unique date/week/month/quarter/year
+        cal_df = demand_df[['date', 'week']].drop_duplicates().copy()
+        cal_df['date'] = pd.to_datetime(cal_df['date'])
+        cal_df['month']   = cal_df['date'].dt.month
+        cal_df['quarter'] = cal_df['date'].dt.quarter
+        cal_df['year']    = cal_df['date'].dt.year
+        cal_df = cal_df.sort_values('date').reset_index(drop=True)
+
+        # Currency — static
+        currency_df = pd.DataFrame([{'currency_code': 'USD', 'currency_name': 'US Dollar', 'symbol': '$'}])
+
+        # PromoEvents — flatten promos → items → stores
+        if not promos_df.empty:
+            promo_ev = promos_df.merge(
+                promo_group_items_df[['promo_group_name', 'item_id']], on='promo_group_name', how='left'
+            ).merge(
+                promo_stores_df[['promo_name', 'store_id']], on='promo_name', how='left'
+            )
+            if filter_store:
+                promo_ev = promo_ev[promo_ev['store_id'] == filter_store]
+            if filter_item:
+                promo_ev = promo_ev[promo_ev['item_id'] == filter_item]
+        else:
+            promo_ev = pd.DataFrame()
+
+        # SiteInformation — stores
+        site_df = stores_df.copy()
+        if filter_store:
+            site_df = site_df[site_df['store_id'] == filter_store]
+
+        # ItemInformation — items
+        item_dl_df = items_df.copy()
+        if filter_item:
+            item_dl_df = item_dl_df[item_dl_df['item_id'] == filter_item]
+
+        # SupplierInformation
+        sup_info_df = suppliers_df.copy()
+        if sel_supplier_dl:
+            sup_info_df = sup_info_df[sup_info_df['supplier_id'] == sel_supplier_dl]
+
+        files = {
+            'SiteInformation.csv':         site_df,
+            'ItemInformation.csv':         item_dl_df,
+            'SupplierInformation.csv':     sup_info_df,
+            'InventoryInformation.csv':    f_item(f_store(inv_df)),
+            'SupplierOrderHeader.csv':     f_dc(sup_orders_df),
+            'SupplierOrderLine.csv':       f_item(f_dc(supplier_od_df)),
+            'SupplierReceipts.csv':        f_item(f_dc(sup_rec_df)),
+            'CustomerOrderHeader.csv':     f_store(str_orders_df),
+            'CustomerOrderLine.csv':       f_item(f_store(store_od_df)),
+            'CustomerOrderDelivery.csv':   f_item(f_store(str_rec_df)),
+            'SalesHistoryInformation.csv': f_item(f_store(sales_df)),
+            'CalendarPeriod.csv':          cal_df,
+            'Currency.csv':                currency_df,
+            'PromoEvents.csv':             promo_ev,
+        }
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for fname, df in files.items():
+                zf.writestr(fname, df.to_csv(index=False) if (df is not None and not df.empty) else '')
+        buf.seek(0)
+        return buf.getvalue()
+
+    col_dl1, col_dl2 = st.columns(2)
+    with col_dl1:
+        st.download_button(
+            label=f"⬇ Download — {sel_store} / {sel_item} (filtered)",
+            data=build_zip(filter_store=sel_store, filter_item=sel_item),
+            file_name=f"export_{sel_store}_{sel_item}.zip",
+            mime="application/zip",
+            use_container_width=True,
+        )
+    with col_dl2:
+        st.download_button(
+            label="⬇ Download — All Stores & Items",
+            data=build_zip(),
+            file_name="export_all.zip",
+            mime="application/zip",
+            use_container_width=True,
+        )
+
 else:
     st.info("Configure parameters in the sidebar and click **▶ Run Simulation** to start.")
+
