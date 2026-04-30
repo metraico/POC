@@ -488,8 +488,8 @@ while current_date <= END_DATE:
     for store in STORES:
         scfg      = store_cfg[store]
         order_dow = DAY_MAP[scfg['order_cycle_day'].upper()]
-        if dow != order_dow:
-            continue
+        # if dow != order_dow:
+        #     continue
 
         # Identify items below reorder point
         items_to_order = []

@@ -784,6 +784,34 @@ if run_btn:
     ))
 
     add_promo_shading_daily(fig_daily)
+
+    # ── Highlight store order days ────────────────────────────────────────────
+    if not store_od_df.empty:
+        order_qty_by_date = (
+            store_od_df[
+                (store_od_df['store_id'] == sel_store) &
+                (store_od_df['item_id']  == sel_item)
+            ]
+            .groupby('order_date')['order_qty'].sum()
+        )
+        order_qty_by_date.index = pd.to_datetime(order_qty_by_date.index)
+        added_order_legend = False
+        for od, qty in order_qty_by_date.items():
+            fig_daily.add_vline(
+                x=od.timestamp() * 1000,
+                line=dict(color='#A8E6CF', width=1.2, dash='dot'),
+                annotation_text=f'{int(qty)} units',
+                annotation_font=dict(color='#A8E6CF', size=9),
+                annotation_position='top',
+            )
+            if not added_order_legend:
+                fig_daily.add_scatter(
+                    x=[None], y=[None], mode='lines',
+                    name='Store Order Placed',
+                    line=dict(color='#A8E6CF', width=1.2, dash='dot'),
+                )
+                added_order_legend = True
+
     fig_daily.update_layout(
         barmode='group',
         xaxis=dict(title='Date'),
