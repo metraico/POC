@@ -5,11 +5,13 @@ Outputs are saved to output/<run_id>/ as CSVs.
 """
 
 import io
+import json
 import math
+import time
 import uuid
 import zipfile
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -346,7 +348,7 @@ def run_simulation(
     daily_inv_buf          = []
     weekly_sales           = defaultdict(lambda: defaultdict(float))
 
-    po_seq = sr_seq = so_seq = rec_seq = 0
+    po_seq = so_seq = rec_seq = 0
 
     def iso_week(d):
         iso = d.isocalendar()
@@ -389,7 +391,7 @@ def run_simulation(
                 supplier_receipts_buf.append({
                     'receipt_id': f'REC_{rec_seq:06d}', 'dc_id': dc_id, 'item_id': item_id,
                     'receipt_date': current_date, 'received_qty': float(received),
-                    'unfilled_qty': float(remainder), 'receipt_type': 'PARTIAL', 'po_number': po_num,
+                    'receipt_type': 'SUPPLIER_DELIVERY', 'is_late': is_late, 'is_partial': True, 'po_number': po_num,
                 })
                 still.append({'dc_id':dc_id,'item_id':item_id,'po_number':po_num,'qty':remainder,
                                'scheduled_date':current_date+timedelta(days=3),
@@ -401,7 +403,7 @@ def run_simulation(
                 supplier_receipts_buf.append({
                     'receipt_id': f'REC_{rec_seq:06d}', 'dc_id': dc_id, 'item_id': item_id,
                     'receipt_date': current_date, 'received_qty': float(qty),
-                    'unfilled_qty': 0.0, 'receipt_type': 'FULL', 'po_number': po_num,
+                    'receipt_type': 'SUPPLIER_DELIVERY', 'is_late': is_late, 'is_partial': False, 'po_number': po_num,
                 })
         receipt_schedule = still
 
@@ -411,6 +413,7 @@ def run_simulation(
             if entry['scheduled_date'] != current_date:
                 still_sr.append(entry); continue
             store_id, item_id, qty, so_num = entry['store_id'], entry['item_id'], entry['qty'], entry['so_number']
+            order_qty = entry.get('order_qty', float(qty))
             is_late = entry.get('is_late', False)
             already_partial = entry.get('already_partial', False)
 
@@ -426,23 +429,24 @@ def run_simulation(
                 remainder= qty - received
                 on_hand[store_id][item_id]  += received
                 on_order[store_id][item_id]  = max(0, on_order[store_id][item_id] - received)
-                sr_seq_val = sr_seq + 1
                 store_receipts_buf.append({
-                    'receipt_id': f'SR_{sr_seq_val:06d}', 'store_id': store_id, 'item_id': item_id,
-                    'receipt_date': current_date, 'received_qty': float(received),
-                    'unfilled_qty': float(remainder), 'receipt_type': 'PARTIAL', 'so_number': so_num,
+                    'store_id': store_id, 'item_id': item_id, 'so_number': so_num,
+                    'delivery_date': current_date, 'delivered_qty': float(received),
+                    'unfilled_qty': float(remainder), 'delivery_status': 'PARTIAL_DELIVERY',
+                    'order_qty': order_qty,
                 })
                 still_sr.append({'store_id':store_id,'item_id':item_id,'so_number':so_num,'qty':remainder,
+                                  'order_qty': order_qty,
                                   'scheduled_date':current_date+timedelta(days=2),
                                   'is_late':is_late,'already_partial':True})
             else:
                 on_hand[store_id][item_id]  += qty
                 on_order[store_id][item_id]  = max(0, on_order[store_id][item_id] - qty)
-                sr_seq_val = sr_seq + 1
                 store_receipts_buf.append({
-                    'receipt_id': f'SR_{sr_seq_val:06d}', 'store_id': store_id, 'item_id': item_id,
-                    'receipt_date': current_date, 'received_qty': float(qty),
-                    'unfilled_qty': 0.0, 'receipt_type': 'FULL', 'so_number': so_num,
+                    'store_id': store_id, 'item_id': item_id, 'so_number': so_num,
+                    'delivery_date': current_date, 'delivered_qty': float(qty),
+                    'unfilled_qty': 0.0, 'delivery_status': 'FULL_DELIVERY',
+                    'order_qty': order_qty,
                 })
         store_receipt_schedule = still_sr
 
@@ -479,6 +483,20 @@ def run_simulation(
                     'woc': round(woc, 2) if woc != 999 else None,
                 })
 
+        # DC inventory snapshot (end-of-day, after fulfilling store orders)
+        for dc in DCS:
+            for item in ITEMS:
+                dc_oh = float(on_hand[dc][item])
+                dc_oo = float(on_order[dc][item])
+                daily_inv_buf.append({
+                    'store_id': dc, 'item_id': item, 'date': current_date,
+                    'week': week_str,
+                    'on_hand_qty': dc_oh,
+                    'on_order_qty': dc_oo,
+                    'inventory_status': 'ZERO' if dc_oh == 0 else 'AVAILABLE',
+                    'woc': None,
+                })
+
         # Step 4: Store orders
         def _place_store_order(store, items_to_order, order_type='STANDARD'):
             nonlocal so_seq
@@ -501,7 +519,8 @@ def run_simulation(
                     on_order[store][item] += ship
                     store_receipt_schedule.append({
                         'store_id': store, 'item_id': item, 'so_number': so_num,
-                        'qty': ship, 'scheduled_date': current_date + timedelta(days=int(dc_store_lead_days)),
+                        'qty': ship, 'order_qty': float(qty),
+                        'scheduled_date': current_date + timedelta(days=int(dc_store_lead_days)),
                         'is_late': False, 'already_partial': False,
                     })
 
@@ -610,6 +629,7 @@ if run_btn:
         st.error("Start date must be before end date.")
         st.stop()
 
+    _t0 = time.monotonic()
     with st.spinner("Running simulation…"):
         (demand_df, sales_df, inv_df,
          sup_rec_df, str_rec_df,
@@ -634,8 +654,9 @@ if run_btn:
         )
 
     # -- Save to output/ ------------------------------------------------------
-    run_id  = f"debug_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
-    out_dir = OUTPUT_ROOT / run_id
+    _elapsed = time.monotonic() - _t0
+    run_id   = f"debug_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
+    out_dir  = OUTPUT_ROOT / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
     demand_df.to_csv(out_dir / "demand_matrix.csv",      index=False)
@@ -654,6 +675,16 @@ if run_btn:
         str_orders_df=str_orders_df, store_od_df=store_od_df,
         store_dc_map=store_dc_map,
     )
+    st.session_state['run_id']      = run_id
+    st.session_state['run_elapsed'] = _elapsed
+    st.session_state['run_config']  = {
+        'seed':        int(seed),
+        'start_date':  start_date.isoformat(),
+        'end_date':    end_date.isoformat(),
+        'store_count': len(stores_df),
+        'item_count':  len(items_df),
+        'dc_count':    len(dcs_df),
+    }
 
 if 'sim_results' in st.session_state:
     _r = st.session_state['sim_results']
@@ -1007,9 +1038,10 @@ if 'sim_results' in st.session_state:
     # Per-file CamelCase column renames (applied at write / display time)
     _SPEC_RENAMES = {
         'SiteInformation.csv': {
-            'store_id': 'SiteCode', 'store_name': 'SiteName',
-            'country_code': 'CountryCode', 'store_type': 'SiteType',
+            'site_code': 'SiteCode', 'site_name': 'SiteName',
+            'country_code': 'CountryCode', 'site_type': 'SiteType',
             'region': 'Region', 'division': 'Division', 'district': 'District',
+            'assigned_dc': 'AssignedDC',
         },
         'ItemInformation.csv': {
             'item_id': 'ItemCode', 'item_description': 'ItemDescription',
@@ -1046,7 +1078,7 @@ if 'sim_results' in st.session_state:
             'receipt_id': 'ReceiptId', 'po_number': 'PurchaseOrderNumber',
             'dc_id': 'SiteCode', 'item_id': 'ItemCode',
             'receipt_date': 'ReceiptDate', 'received_qty': 'ReceivedQuantity',
-            'receipt_type': 'ReceiptType',
+            'receipt_type': 'ReceiptType', 'is_late': 'IsLate', 'is_partial': 'IsPartial',
         },
         'CustomerOrderHeader.csv': {
             'so_number': 'CustomerOrderNumber', 'store_id': 'SiteCode',
@@ -1060,9 +1092,9 @@ if 'sim_results' in st.session_state:
         },
         'CustomerOrderDelivery.csv': {
             'so_number': 'CustomerOrderNumber', 'store_id': 'SiteCode',
-            'item_id': 'ItemCode', 'receipt_date': 'DeliveryDate',
-            'received_qty': 'DeliveredQuantity', 'unfilled_qty': 'UnfilledQuantity',
-            'receipt_type': 'DeliveryStatus', 'receipt_id': 'DeliveryId',
+            'item_id': 'ItemCode', 'delivery_date': 'DeliveryDate',
+            'delivered_qty': 'DeliveredQuantity', 'unfilled_qty': 'UnfilledQuantity',
+            'delivery_status': 'DeliveryStatus', 'order_qty': 'OrderQuantity',
         },
         'SalesHistoryInformation.csv': {
             'store_id': 'SiteCode', 'item_id': 'ItemCode',
@@ -1134,9 +1166,24 @@ if 'sim_results' in st.session_state:
         else:
             promo_ev = pd.DataFrame()
 
-        site_df = stores_df.copy()
+        # Merge stores + DCs into unified SiteInformation schema
+        _store_site = stores_df.rename(columns={
+            'store_id': 'site_code', 'store_name': 'site_name', 'store_type': 'site_type',
+        }).copy()
+        _store_site['site_type'] = 'Store'
+        _store_site['assigned_dc'] = _store_site['site_code'].map(store_dc_map)
+
+        _dc_site = dcs_df.rename(columns={
+            'dc_id': 'site_code', 'dc_name': 'site_name', 'dc_type': 'site_type',
+        }).copy()
+        _dc_site['site_type'] = 'DC'
+        _dc_site['assigned_dc'] = None
+
+        site_df = pd.concat([_store_site, _dc_site], ignore_index=True)
         if filter_store:
-            site_df = site_df[site_df['store_id'] == filter_store]
+            _sel_dc = store_dc_map.get(filter_store)
+            _keep = [filter_store] + ([_sel_dc] if _sel_dc else [])
+            site_df = site_df[site_df['site_code'].isin(_keep)]
 
         item_dl_df = items_df.copy()
         if filter_item:
@@ -1163,8 +1210,111 @@ if 'sim_results' in st.session_state:
             'PromoEvents.csv':             promo_ev,
         }
 
+    def _build_manifest_and_report():
+        run_id_val  = st.session_state.get('run_id', 'unknown')
+        run_cfg     = st.session_state.get('run_config', {})
+        elapsed     = st.session_state.get('run_elapsed', 0.0)
+        generated   = datetime.now(tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        full_dfs = _prepare_export_dfs()
+
+        # feeds block
+        feeds = [
+            {'name': fname, 'row_count': len(df) if df is not None and not df.empty else 0, 'path': fname}
+            for fname, df in full_dfs.items()
+        ]
+
+        # ── checks ────────────────────────────────────────────────────────────
+        checks = []
+
+        # 1. all feeds non-empty
+        empty = [f['name'] for f in feeds if f['row_count'] == 0]
+        checks.append({'name': 'all_feeds_non_empty', 'passed': len(empty) == 0,
+                        'violations': len(empty), 'details': empty or None})
+
+        # 2. no null SiteCode
+        site_exp = full_dfs.get('SiteInformation.csv')
+        v = int(site_exp['site_code'].isna().sum()) if site_exp is not None and not site_exp.empty else 0
+        checks.append({'name': 'no_null_site_codes', 'passed': v == 0, 'violations': v, 'details': None})
+
+        # 3. no null ItemCode
+        item_exp = full_dfs.get('ItemInformation.csv')
+        v = int(item_exp['item_id'].isna().sum()) if item_exp is not None and not item_exp.empty else 0
+        checks.append({'name': 'no_null_item_codes', 'passed': v == 0, 'violations': v, 'details': None})
+
+        # 4. inventory dates in simulation range
+        inv_exp = full_dfs.get('InventoryInformation.csv')
+        v = 0
+        if inv_exp is not None and not inv_exp.empty:
+            start_d = pd.to_datetime(run_cfg.get('start_date'))
+            end_d   = pd.to_datetime(run_cfg.get('end_date'))
+            dates   = pd.to_datetime(inv_exp['date'])
+            v = int(((dates < start_d) | (dates > end_d)).sum())
+        checks.append({'name': 'inventory_dates_in_range', 'passed': v == 0, 'violations': v, 'details': None})
+
+        # 5. SupplierReceipts receipt_type always SUPPLIER_DELIVERY
+        sr_exp = full_dfs.get('SupplierReceipts.csv')
+        v = 0
+        if sr_exp is not None and not sr_exp.empty and 'receipt_type' in sr_exp.columns:
+            v = int((sr_exp['receipt_type'] != 'SUPPLIER_DELIVERY').sum())
+        checks.append({'name': 'supplier_receipt_type_valid', 'passed': v == 0, 'violations': v, 'details': None})
+
+        # 6. CustomerOrderDelivery delivery_status values valid
+        cod_exp = full_dfs.get('CustomerOrderDelivery.csv')
+        v = 0
+        if cod_exp is not None and not cod_exp.empty and 'delivery_status' in cod_exp.columns:
+            v = int((~cod_exp['delivery_status'].isin({'FULL_DELIVERY', 'PARTIAL_DELIVERY'})).sum())
+        checks.append({'name': 'delivery_status_valid', 'passed': v == 0, 'violations': v, 'details': None})
+
+        # 7. store fill rate >= 50 %
+        fill_rate = 1.0
+        if cod_exp is not None and not cod_exp.empty:
+            total_ord = cod_exp['order_qty'].sum()
+            total_del = cod_exp['delivered_qty'].sum()
+            fill_rate = float(total_del / total_ord) if total_ord > 0 else 1.0
+        fill_ok = fill_rate >= 0.5
+        checks.append({'name': 'store_fill_rate_min_50pct', 'passed': fill_ok,
+                        'violations': 0 if fill_ok else 1, 'details': None})
+
+        validation_passed = all(c['passed'] for c in checks)
+
+        # ── summary stats ─────────────────────────────────────────────────────
+        dc_stockout_rate = 0.0
+        if inv_exp is not None and not inv_exp.empty:
+            dc_ids = set(dcs_df['dc_id'].tolist())
+            dc_inv = inv_exp[inv_exp['store_id'].isin(dc_ids)]
+            if not dc_inv.empty:
+                dc_stockout_rate = float((dc_inv['on_hand_qty'] == 0).mean())
+
+        summary_stats = {
+            'dc_stockout_rate':       round(dc_stockout_rate, 4),
+            'store_fill_rate':        round(fill_rate, 4),
+            'generation_time_seconds': round(elapsed, 2),
+        }
+
+        manifest = {
+            'run_id':           run_id_val,
+            'generated_at':     generated,
+            'spec_version':     '1.1',
+            'config':           run_cfg,
+            'feeds':            feeds,
+            'validation_passed': validation_passed,
+        }
+        report = {
+            'run_id':            run_id_val,
+            'generated_at':      generated,
+            'validation_passed': validation_passed,
+            'checks':            checks,
+            'summary_stats':     summary_stats,
+        }
+        return (
+            json.dumps(manifest, indent=2, default=str),
+            json.dumps(report,   indent=2, default=str),
+        )
+
     def build_zip(filter_store=None, filter_item=None):
         files = _prepare_export_dfs(filter_store=filter_store, filter_item=filter_item)
+        manifest_json, report_json = _build_manifest_and_report()
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
             for fname, df in files.items():
@@ -1173,6 +1323,8 @@ if 'sim_results' in st.session_state:
                     zf.writestr(fname, out.to_csv(index=False))
                 else:
                     zf.writestr(fname, '')
+            zf.writestr('run_manifest.json',       manifest_json)
+            zf.writestr('data_quality_report.json', report_json)
         buf.seek(0)
         return buf.getvalue()
 
@@ -1193,6 +1345,36 @@ if 'sim_results' in st.session_state:
             mime="application/zip",
             use_container_width=True,
         )
+
+    # ── Validation ────────────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Validation")
+    _manifest_json, _report_json = _build_manifest_and_report()
+    _report = json.loads(_report_json)
+    _passed  = _report['validation_passed']
+    if _passed:
+        st.success("validation_passed: true — all checks passed")
+    else:
+        st.error("validation_passed: false — one or more checks failed")
+
+    _chk_col, _stat_col = st.columns(2)
+    with _chk_col:
+        st.caption("**Checks**")
+        for chk in _report['checks']:
+            icon = "✓" if chk['passed'] else "✗"
+            detail = f"  ({chk['violations']} violations)" if not chk['passed'] else ""
+            st.markdown(f"`{icon}` {chk['name']}{detail}")
+    with _stat_col:
+        st.caption("**Summary Stats**")
+        ss = _report['summary_stats']
+        st.markdown(f"- DC stockout rate: **{ss['dc_stockout_rate']:.2%}**")
+        st.markdown(f"- Store fill rate: **{ss['store_fill_rate']:.2%}**")
+        st.markdown(f"- Generation time: **{ss['generation_time_seconds']}s**")
+
+    with st.expander("run_manifest.json", expanded=False):
+        st.code(_manifest_json, language='json')
+    with st.expander("data_quality_report.json", expanded=False):
+        st.code(_report_json, language='json')
 
     # ── Output CSV Viewer ─────────────────────────────────────────────────────
     st.divider()
