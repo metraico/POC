@@ -1004,10 +1004,93 @@ if 'sim_results' in st.session_state:
     st.divider()
     st.subheader("Download Data")
 
-    def build_zip(filter_store=None, filter_item=None):
+    # Per-file CamelCase column renames (applied at write / display time)
+    _SPEC_RENAMES = {
+        'SiteInformation.csv': {
+            'store_id': 'SiteCode', 'store_name': 'SiteName',
+            'country_code': 'CountryCode', 'store_type': 'SiteType',
+            'region': 'Region', 'division': 'Division', 'district': 'District',
+        },
+        'ItemInformation.csv': {
+            'item_id': 'ItemCode', 'item_description': 'ItemDescription',
+            'uom': 'UOM', 'item_status': 'ItemStatus', 'category': 'Category',
+            'subcategory': 'Subcategory', 'brand': 'Brand',
+            'unit_cost': 'UnitCost', 'unit_price': 'UnitPrice',
+            'velocity_class': 'VelocityClass', 'lifecycle_profile': 'LifecycleProfile',
+            'case_pack_size': 'CasePackSize', 'size_group': 'SizeGroup',
+            'size_rank': 'SizeRank', 'is_ecomm_eligible': 'IsEcommEligible',
+        },
+        'SupplierInformation.csv': {
+            'supplier_id': 'SupplierCode', 'supplier_name': 'SupplierName',
+            'supplier_country': 'SupplierCountry', 'supplier_region': 'SupplierRegion',
+            'category': 'Category',
+        },
+        'InventoryInformation.csv': {
+            'store_id': 'SiteCode', 'item_id': 'ItemCode',
+            'date': 'SnapshotDate', 'week': 'InventoryWeek',
+            'on_hand_qty': 'OnHandQty', 'on_order_qty': 'OnOrderQty',
+            'inventory_status': 'InventoryStatus', 'woc': 'WeeksOfCover',
+        },
+        'SupplierOrderHeader.csv': {
+            'po_number': 'PurchaseOrderNumber', 'dc_id': 'SiteCode',
+            'supplier_id': 'SupplierCode', 'order_date': 'OrderDate',
+            'expected_date': 'ExpectedReceiptDate',
+        },
+        'SupplierOrderLine.csv': {
+            'po_number': 'PurchaseOrderNumber', 'dc_id': 'SiteCode',
+            'item_id': 'ItemCode', 'supplier_id': 'SupplierCode',
+            'order_qty': 'OrderQuantity', 'need_qty': 'NeedQuantity',
+            'unit_cost': 'UnitCost',
+        },
+        'SupplierReceipts.csv': {
+            'receipt_id': 'ReceiptId', 'po_number': 'PurchaseOrderNumber',
+            'dc_id': 'SiteCode', 'item_id': 'ItemCode',
+            'receipt_date': 'ReceiptDate', 'received_qty': 'ReceivedQuantity',
+            'receipt_type': 'ReceiptType',
+        },
+        'CustomerOrderHeader.csv': {
+            'so_number': 'CustomerOrderNumber', 'store_id': 'SiteCode',
+            'order_date': 'OrderDate', 'week': 'OrderWeek',
+            'dc_id': 'DCCode', 'order_type': 'OrderType',
+        },
+        'CustomerOrderLine.csv': {
+            'so_number': 'CustomerOrderNumber', 'item_id': 'ItemCode',
+            'store_id': 'SiteCode', 'order_qty': 'OrderQuantity',
+            'order_date': 'OrderDate', 'order_type': 'OrderType',
+        },
+        'CustomerOrderDelivery.csv': {
+            'so_number': 'CustomerOrderNumber', 'store_id': 'SiteCode',
+            'item_id': 'ItemCode', 'receipt_date': 'DeliveryDate',
+            'received_qty': 'DeliveredQuantity', 'unfilled_qty': 'UnfilledQuantity',
+            'receipt_type': 'DeliveryStatus', 'receipt_id': 'DeliveryId',
+        },
+        'SalesHistoryInformation.csv': {
+            'store_id': 'SiteCode', 'item_id': 'ItemCode',
+            'date': 'CalendarDate', 'week': 'SalesWeek',
+            'sales_qty': 'SalesQuantity', 'sales_amount': 'SalesAmount',
+            'demand_qty': 'DemandQuantity', 'lost_sales_qty': 'LostSalesQuantity',
+        },
+        'CalendarPeriod.csv': {
+            'date': 'CalendarDate', 'week': 'WeekId',
+            'month': 'MonthId', 'quarter': 'QuarterId', 'year': 'YearId',
+        },
+        'Currency.csv': {
+            'currency_code': 'CurrencyCode', 'currency_name': 'CurrencyName',
+            'symbol': 'Symbol',
+        },
+        'PromoEvents.csv': {
+            'promo_name': 'PromoEventId', 'promo_group_name': 'PromoGroupName',
+            'event_type': 'EventType', 'start_date': 'PromoStartDate',
+            'end_date': 'PromoEndDate', 'demand_multiplier': 'DemandMultiplier',
+            'post_promo_decay_days': 'PostPromoDecayDays',
+            'post_promo_decay_shape': 'PostPromoDecayShape',
+            'item_id': 'ItemCode', 'store_id': 'SiteCode',
+        },
+    }
+
+    def _prepare_export_dfs(filter_store=None, filter_item=None):
         sel_dc_dl = store_dc_map.get(filter_store) if filter_store else None
 
-        # Resolve supplier for the selected DC
         sel_supplier_dl = None
         if sel_dc_dl is not None and not sup_orders_df.empty and 'supplier_id' in sup_orders_df.columns:
             dc_sup = sup_orders_df[sup_orders_df['dc_id'] == sel_dc_dl]['supplier_id']
@@ -1029,7 +1112,6 @@ if 'sim_results' in st.session_state:
                 return df if df is not None else pd.DataFrame()
             return df[df['dc_id'] == sel_dc_dl] if 'dc_id' in df.columns else df
 
-        # CalendarPeriod — unique date/week/month/quarter/year
         cal_df = demand_df[['date', 'week']].drop_duplicates().copy()
         cal_df['date'] = pd.to_datetime(cal_df['date'])
         cal_df['month']   = cal_df['date'].dt.month
@@ -1037,10 +1119,8 @@ if 'sim_results' in st.session_state:
         cal_df['year']    = cal_df['date'].dt.year
         cal_df = cal_df.sort_values('date').reset_index(drop=True)
 
-        # Currency — static
         currency_df = pd.DataFrame([{'currency_code': 'USD', 'currency_name': 'US Dollar', 'symbol': '$'}])
 
-        # PromoEvents — flatten promos → items → stores
         if not promos_df.empty:
             promo_ev = promos_df.merge(
                 promo_group_items_df[['promo_group_name', 'item_id']], on='promo_group_name', how='left'
@@ -1054,22 +1134,19 @@ if 'sim_results' in st.session_state:
         else:
             promo_ev = pd.DataFrame()
 
-        # SiteInformation — stores
         site_df = stores_df.copy()
         if filter_store:
             site_df = site_df[site_df['store_id'] == filter_store]
 
-        # ItemInformation — items
         item_dl_df = items_df.copy()
         if filter_item:
             item_dl_df = item_dl_df[item_dl_df['item_id'] == filter_item]
 
-        # SupplierInformation
         sup_info_df = suppliers_df.copy()
         if sel_supplier_dl:
             sup_info_df = sup_info_df[sup_info_df['supplier_id'] == sel_supplier_dl]
 
-        files = {
+        return {
             'SiteInformation.csv':         site_df,
             'ItemInformation.csv':         item_dl_df,
             'SupplierInformation.csv':     sup_info_df,
@@ -1086,10 +1163,16 @@ if 'sim_results' in st.session_state:
             'PromoEvents.csv':             promo_ev,
         }
 
+    def build_zip(filter_store=None, filter_item=None):
+        files = _prepare_export_dfs(filter_store=filter_store, filter_item=filter_item)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
             for fname, df in files.items():
-                zf.writestr(fname, df.to_csv(index=False) if (df is not None and not df.empty) else '')
+                if df is not None and not df.empty:
+                    out = df.rename(columns=_SPEC_RENAMES.get(fname, {}))
+                    zf.writestr(fname, out.to_csv(index=False))
+                else:
+                    zf.writestr(fname, '')
         buf.seek(0)
         return buf.getvalue()
 
@@ -1110,6 +1193,33 @@ if 'sim_results' in st.session_state:
             mime="application/zip",
             use_container_width=True,
         )
+
+    # ── Output CSV Viewer ─────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Output CSV Tables")
+
+    view_mode = st.radio(
+        "View mode",
+        options=["Filtered (selected store & item)", "All stores & items"],
+        horizontal=True,
+        key="csv_view_mode",
+    )
+    if view_mode.startswith("Filtered"):
+        _view_dfs = _prepare_export_dfs(filter_store=sel_store, filter_item=sel_item)
+        _view_label = f"{sel_store} / {sel_item}"
+    else:
+        _view_dfs = _prepare_export_dfs()
+        _view_label = "All stores & items"
+
+    for csv_name, df in _view_dfs.items():
+        table_title = csv_name.replace('.csv', '')
+        row_count = len(df) if df is not None and not df.empty else 0
+        with st.expander(f"{table_title}  —  {row_count:,} rows  ({_view_label})", expanded=False):
+            if row_count > 0:
+                display_df = df.rename(columns=_SPEC_RENAMES.get(csv_name, {})).reset_index(drop=True)
+                st.dataframe(display_df, use_container_width=True)
+            else:
+                st.caption("No data for the current selection.")
 
 else:
     st.info("Configure parameters in the sidebar and click **▶ Run Simulation** to start.")
