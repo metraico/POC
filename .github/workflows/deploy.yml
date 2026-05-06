@@ -35,9 +35,17 @@ jobs:
 
             # Install Docker Compose if not present
             if ! command -v docker-compose &> /dev/null; then
-              sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
+              sudo curl -L "https://github.com/docker/compose/releases/download/v2.27.0/docker-compose-linux-x86_64" \
                 -o /usr/local/bin/docker-compose
               sudo chmod +x /usr/local/bin/docker-compose
+            fi
+
+            # Install buildx if not present
+            if ! docker buildx version &> /dev/null; then
+              mkdir -p ~/.docker/cli-plugins
+              curl -L "https://github.com/docker/buildx/releases/download/v0.23.0/buildx-v0.23.0.linux-amd64" \
+                -o ~/.docker/cli-plugins/docker-buildx
+              chmod +x ~/.docker/cli-plugins/docker-buildx
             fi
 
             # Clone repo if it doesn't exist, otherwise pull latest
