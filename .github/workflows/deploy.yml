@@ -1,0 +1,33 @@
+name: Deploy to AWS EC2
+
+on:
+  push:
+    branches:
+      - prod
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd /home/${{ secrets.EC2_USER }}/POC
+
+            # Pull latest code
+            git pull origin prod
+
+            # Activate virtual environment and install dependencies
+            source .venv/bin/activate
+            pip install -r requirements.txt
+
+            # Restart the app via systemd
+            sudo systemctl restart poc-app
