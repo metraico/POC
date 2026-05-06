@@ -10,9 +10,11 @@ services:
       - "--entrypoints.web.address=:80"
     ports:
       - "80:80"
-      - "8080:8080"   # Traefik dashboard
+      - "8080:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - web
 
   app:
     build: .
@@ -25,3 +27,9 @@ services:
       - "traefik.http.services.app.loadbalancer.server.port=8501"
     expose:
       - "8501"
+    networks:
+      - web
+
+networks:
+  web:
+    driver: bridge
