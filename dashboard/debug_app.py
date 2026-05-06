@@ -1197,7 +1197,13 @@ if 'sim_results' in st.session_state:
             'SiteInformation.csv':         site_df,
             'ItemInformation.csv':         item_dl_df,
             'SupplierInformation.csv':     sup_info_df,
-            'InventoryInformation.csv':    f_item(f_store(inv_df)),
+            'InventoryInformation.csv':    (
+                f_item(f_store(inv_df))
+                .sort_values('date')
+                .groupby(['store_id', 'item_id', 'week'], sort=False)
+                .last()
+                .reset_index()
+            ),
             'SupplierOrderHeader.csv':     f_dc(sup_orders_df),
             'SupplierOrderLine.csv':       f_item(f_dc(supplier_od_df)),
             'SupplierReceipts.csv':        f_item(f_dc(sup_rec_df)),
