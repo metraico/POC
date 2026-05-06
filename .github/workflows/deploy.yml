@@ -61,7 +61,7 @@ jobs:
 
             # Rebuild and restart containers
             docker-compose down
-            docker-compose build --no-cache
+            docker build -t poc-app .
             docker-compose up -d
 
             echo "Deployment complete. App running at http://${{ secrets.EC2_HOST }}"

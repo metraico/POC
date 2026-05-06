@@ -17,7 +17,7 @@ services:
       - web
 
   app:
-    build: .
+    image: poc-app
     container_name: poc-app
     restart: always
     labels:
