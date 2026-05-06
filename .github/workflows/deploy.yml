@@ -46,6 +46,8 @@ jobs:
             fi
 
             cd $APP_DIR
+            git config --global --add safe.directory $APP_DIR
+            sudo chown -R $USER:$USER $APP_DIR
             git fetch origin prod
             git reset --hard origin/prod
 
