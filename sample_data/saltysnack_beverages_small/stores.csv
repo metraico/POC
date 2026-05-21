@@ -1,0 +1,4 @@
+store_id,store_name,country_code,store_type,region,division,district
+STR_E01,Manhattan Flagship,US,RETAIL,East,Northeast,NYC Metro
+STR_E02,Brooklyn Heights,US,RETAIL,East,Northeast,NYC Metro
+STR_W01,Los Angeles Downtown,US,RETAIL,West,Pacific,LA Metro

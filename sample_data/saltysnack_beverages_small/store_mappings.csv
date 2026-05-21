@@ -1,0 +1,4 @@
+from_store_id,to_dc_id
+STR_E01,DC_EAST
+STR_E02,DC_EAST
+STR_W01,DC_WEST

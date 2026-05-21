@@ -1,0 +1,3 @@
+dc_id,dc_name,country_code,dc_type,region,division,district
+DC_EAST,East Regional Distribution Center,US,REGIONAL_DC,East,Northeast,NY Metro
+DC_WEST,West Regional Distribution Center,US,REGIONAL_DC,West,Pacific,LA Metro

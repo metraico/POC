@@ -14,7 +14,9 @@ client = clickhouse_connect.get_client(
     database=os.environ['CH_DB'],
     username=os.environ['CH_USER'],
     password=os.environ['CH_PASSWORD'],
-    verify=False
+    verify=False,
+    connect_timeout=60,
+    send_receive_timeout=300,
 )
 
 # Drop old tables in dependency order
@@ -29,6 +31,8 @@ drops = [
     'supplier_orders',
     'store_inventory',
     'dc_inventory',
+    'sales_daily',
+    'store_inventory_daily',
     # legacy table names
     'simulation_runs',
     'customer_order_details',
@@ -181,6 +185,34 @@ tables = [
       inventory_status   String
     ) ENGINE = MergeTree()
     ORDER BY (simulation_id, dc_id, item_id, inventory_week)
+    """,
+    """
+    CREATE TABLE sales_daily (
+      simulation_id  String,
+      account_id     String,
+      store_id       String,
+      item_id        String,
+      sales_date     Date,
+      sales_qty      Float64,
+      sales_amount   Float64,
+      unit_price     Float64,
+      uom            String
+    ) ENGINE = MergeTree()
+    ORDER BY (simulation_id, store_id, item_id, sales_date)
+    """,
+    """
+    CREATE TABLE store_inventory_daily (
+      simulation_id      String,
+      account_id         String,
+      store_id           String,
+      item_id            String,
+      inventory_date     Date,
+      on_hand_quantity   Float64,
+      available_quantity Float64,
+      on_order_quantity  Float64,
+      inventory_status   String
+    ) ENGINE = MergeTree()
+    ORDER BY (simulation_id, store_id, item_id, inventory_date)
     """,
 ]
 

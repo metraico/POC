@@ -18,7 +18,13 @@
       "Bash(/Users/niranjan/Metrai/MetraiCo/POC/.venv/bin/pip --version)",
       "Bash(python3:*)",
       "Bash(python:*)",
-      "Bash(.venv/bin/python:*)"
+      "Bash(.venv/bin/python:*)",
+      "Bash(ls -lh /Users/niranjan/Metrai/MetraiCo/POC/sample_data/saltysnack_beverages/*.csv)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8502/healthz)",
+      "Bash(pkill -f \"streamlit run dashboard/debug_app.py\")",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
     ]
   }
 }

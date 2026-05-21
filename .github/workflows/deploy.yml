@@ -1,0 +1,67 @@
+name: Deploy to AWS EC2
+
+on:
+  push:
+    branches:
+      - prod
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+
+            APP_DIR="/home/${{ secrets.EC2_USER }}/POC"
+
+            # Install Docker if not present
+            if ! command -v docker &> /dev/null; then
+              sudo yum update -y
+              sudo yum install -y docker
+              sudo systemctl enable docker
+              sudo systemctl start docker
+              sudo usermod -aG docker $USER
+            fi
+
+            # Install Docker Compose if not present
+            if ! command -v docker-compose &> /dev/null; then
+              sudo curl -L "https://github.com/docker/compose/releases/download/v2.27.0/docker-compose-linux-x86_64" \
+                -o /usr/local/bin/docker-compose
+              sudo chmod +x /usr/local/bin/docker-compose
+            fi
+
+            # Install buildx if not present
+            if ! docker buildx version &> /dev/null; then
+              mkdir -p ~/.docker/cli-plugins
+              curl -L "https://github.com/docker/buildx/releases/download/v0.23.0/buildx-v0.23.0.linux-amd64" \
+                -o ~/.docker/cli-plugins/docker-buildx
+              chmod +x ~/.docker/cli-plugins/docker-buildx
+            fi
+
+            # Clone repo if it doesn't exist, otherwise pull latest
+            if [ ! -d "$APP_DIR" ]; then
+              git clone https://github.com/metraico/POC.git $APP_DIR
+            fi
+
+            cd $APP_DIR
+            git config --global --add safe.directory $APP_DIR
+            sudo chown -R $USER:$USER $APP_DIR
+            git fetch origin prod
+            git reset --hard origin/prod
+
+            # Rebuild and restart containers
+            docker-compose down
+            docker build -t poc-app .
+            docker-compose up -d
+
+            echo "Deployment complete. App running at http://${{ secrets.EC2_HOST }}"
