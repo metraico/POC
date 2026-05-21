@@ -10,10 +10,10 @@ A discrete-event, day-by-day retail supply chain simulator. It models a two-tier
 PostgreSQL (static master data: items, stores, promos)
         │
         ▼
-demand_gen.py ──► demand_matrix.parquet + ClickHouse `demand` table
+scripts/demand_gen.py ──► demand_matrix.parquet + ClickHouse `demand` table
         │
         ▼
-simulation.py ──► ClickHouse (10 output tables)
+scripts/simulation.py ──► ClickHouse (10 output tables)
                           │
                           ▼
                   dashboard/app.py (Streamlit)
@@ -45,13 +45,16 @@ ClickHouse (analytics tables)
 retail-sim/
 ├── config.yaml               # All tunable parameters
 ├── requirements.txt
-├── setup_postgres.py         # Creates PG tables + seeds master data
-├── setup_clickhouse.py       # Creates / recreates ClickHouse tables
-├── demand_gen.py             # Phase 1 — generate demand matrix
-├── simulation.py             # Phase 2 — daily simulation loop
+├── scripts/
+│   ├── setup_postgres.py     # Creates PG tables + seeds master data
+│   ├── setup_clickhouse.py   # Creates / recreates ClickHouse tables
+│   ├── demand_gen.py         # Phase 1 — generate demand matrix
+│   └── simulation.py         # Phase 2 — daily simulation loop
 ├── dashboard/
 │   └── app.py                # Streamlit dashboard
-└── demand_matrix.parquet     # Generated — do not commit
+└── docs/
+    ├── WORKFLOW.md           # Operational workflow guide
+    └── DAY_BY_DAY.md         # Daily simulation logic reference
 ```
 
 ---
@@ -64,13 +67,13 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 # 2. Create ClickHouse output tables (drops and recreates)
-python setup_clickhouse.py
+python scripts/setup_clickhouse.py
 
 # 3. Generate demand matrix
-python demand_gen.py --config config.yaml --sim_id SIM_001 --account_id ACC_001
+python scripts/demand_gen.py --config config.yaml --sim_id SIM_001 --account_id ACC_001
 
 # 4. Run simulation
-python simulation.py --config config.yaml --sim_id SIM_001 --account_id ACC_001
+python scripts/simulation.py --config config.yaml --sim_id SIM_001 --account_id ACC_001
 
 # 5. Dashboard
 streamlit run dashboard/app.py
@@ -85,7 +88,7 @@ streamlit run dashboard/app.py
 
 ---
 
-## Phase 1 — Demand Generation (`demand_gen.py`)
+## Phase 1 — Demand Generation (`scripts/demand_gen.py`)
 
 Produces `demand_matrix.parquet`: one row per `(store, item, date)` with a `requested_qty`.
 
@@ -107,7 +110,7 @@ The matrix is also written to the ClickHouse `demand` table (50 000-row batches)
 
 ---
 
-## Phase 2 — Daily Simulation Loop (`simulation.py`)
+## Phase 2 — Daily Simulation Loop (`scripts/simulation.py`)
 
 Iterates from `start_date` to `end_date` one calendar day at a time. The week boundary is ISO: Monday = start, Sunday = end.
 

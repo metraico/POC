@@ -1,1 +1,1 @@
-web: streamlit run dashboard/app.py --server.port $PORT --server.address 0.0.0.0
+web: streamlit run demand_analytics/frontend/app.py --server.port $PORT --server.address 0.0.0.0
