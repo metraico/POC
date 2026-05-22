@@ -32,9 +32,7 @@ all_accounts = sorted(df_all["ACCOUNT"].dropna().unique())
 sel_accounts = st.sidebar.multiselect(
     f"Account ({len(all_accounts)})", all_accounts, placeholder="All accounts"
 )
-df = df_all.copy()
-if sel_accounts:
-    df = df[df["ACCOUNT"].isin(sel_accounts)]
+df = df_all[df_all["ACCOUNT"].isin(sel_accounts)] if sel_accounts else df_all
 
 # ── YEAR + year-specific filters ─────────────────────────────────────────────
 st.sidebar.divider()
@@ -318,5 +316,5 @@ display_df.columns = [
     "Seasonality Index", "Seasonal Baseline",
 ]
 
-st.dataframe(display_df, use_container_width=True, height=400)
-st.caption(f"Showing {len(display_df):,} rows after filters.")
+st.dataframe(display_df.head(2000), use_container_width=True, height=400)
+st.caption(f"Showing {min(len(display_df), 2000):,} of {len(display_df):,} rows after filters.")
