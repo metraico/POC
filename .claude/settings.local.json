@@ -24,7 +24,8 @@
       "Bash(pkill -f \"streamlit run dashboard/debug_app.py\")",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(gh pr *)"
     ]
   }
 }

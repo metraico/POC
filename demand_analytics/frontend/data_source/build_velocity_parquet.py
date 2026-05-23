@@ -42,7 +42,8 @@ def patch_parquet(parquet_path):
     df["YEAR"]    = df["YEAR"].astype(int)
 
     # Drop old columns
-    for col in ("VELOCITY_CLASS", "VELOCITY_OVERALL", "LIFECYCLE_STATUS", "LIFECYCLE_OVERALL"):
+    for col in ("VELOCITY_CLASS", "VELOCITY_OVERALL", "LIFECYCLE_STATUS", "LIFECYCLE_OVERALL",
+                "DEMAND_PATTERN", "ADI", "CV2"):
         if col in df.columns:
             df = df.drop(columns=[col])
 

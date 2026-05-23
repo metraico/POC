@@ -4,7 +4,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-PARQUET = os.path.join(os.path.dirname(__file__), "data_source", "seasonality_demand.parquet")
+PARQUET        = os.path.join(os.path.dirname(__file__), "data_source", "seasonality_demand.parquet")
+PRODFAM_PARQUET = os.path.join(os.path.dirname(__file__), "data_source", "prodfam_seasonality.parquet")
 
 st.set_page_config(
     page_title="Seasonality Dashboard",
@@ -22,7 +23,12 @@ def load_data():
             df[col] = "Unclassified"
     return df
 
+@st.cache_data(show_spinner=False)
+def load_prodfam():
+    return pd.read_parquet(PRODFAM_PARQUET)
+
 df_all = load_data()
+df_pf  = load_prodfam()
 
 # ── Sidebar filters ───────────────────────────────────────────────────────────
 st.sidebar.title("Filters")
@@ -32,7 +38,9 @@ all_accounts = sorted(df_all["ACCOUNT"].dropna().unique())
 sel_accounts = st.sidebar.multiselect(
     f"Account ({len(all_accounts)})", all_accounts, placeholder="All accounts"
 )
-df = df_all[df_all["ACCOUNT"].isin(sel_accounts)] if sel_accounts else df_all
+df = df_all.copy()
+if sel_accounts:
+    df = df[df["ACCOUNT"].isin(sel_accounts)]
 
 # ── YEAR + year-specific filters ─────────────────────────────────────────────
 st.sidebar.divider()
@@ -104,6 +112,29 @@ if sel_items:
 st.sidebar.divider()
 show_zeros = st.sidebar.toggle("Show zero-demand weeks in chart", value=False)
 
+# ── Determine active product families for SI profile chart ───────────────────
+# Collect all families in context: from direct family selection or inferred from items
+if sel_fam:
+    active_prodfams = list(sel_fam)
+elif sel_items:
+    active_prodfams = sorted(
+        df_all[df_all["ITEM_DESCR"].isin(sel_items)]["PRODFAM"].dropna().unique()
+    )
+else:
+    active_prodfams = []
+
+# Keep single-family alias for backward compat (item detail card uses it)
+active_prodfam = active_prodfams[0] if len(active_prodfams) == 1 else None
+
+FAMILY_COLORS = {
+    "BEER":        "#F4A300",
+    "WINE":        "#8B1A4A",
+    "SPIRITS":     "#1F77B4",
+    "NON-ALCOHOL": "#2CA02C",
+    "CBD":         "#9467BD",
+}
+_DEFAULT_COLORS = ["#E377C2", "#17BECF", "#BCBD22", "#FF7F0E", "#D62728"]
+
 # ── Header ────────────────────────────────────────────────────────────────────
 account_label = ", ".join(sel_accounts) if sel_accounts else f"All {len(all_accounts)} accounts"
 st.title("Seasonality Dashboard — Top 20 Accounts")
@@ -112,29 +143,28 @@ st.caption(
     f"SI > 1.0 = above baseline (peak season)  |  SI < 1.0 = below baseline (off season)"
 )
 
-# ── Item Detail Card (shown only when exactly one item is selected) ────────────
-if len(sel_items) == 1:
-    _item_rows = df_all[df_all["ITEM_DESCR"] == sel_items[0]]
-    if _item_rows.empty:
-        _item_rows = df[df["ITEM_DESCR"] == sel_items[0]]
-    if _item_rows.empty:
-        st.warning(f"No data found for selected item: {sel_items[0]}")
-        st.stop()
-    item_data = _item_rows.iloc[0]
-
+# ── Item Detail Cards (one per selected item) ─────────────────────────────────
+def render_item_card(item_name, container=st):
     velocity_colors  = {"High Velocity": "#00B050", "Moderate Velocity": "#FFC000",
                         "Low Velocity": "#FF6600", "Dormant": "#FF0000"}
     lifecycle_colors = {"New": "#4472C4", "Evergreen": "#00B050",
                         "Declining": "#FF6600", "Discontinued": "#FF0000"}
+
+    _rows = df_all[df_all["ITEM_DESCR"] == item_name]
+    if _rows.empty:
+        _rows = df[df["ITEM_DESCR"] == item_name]
+    if _rows.empty:
+        container.warning(f"No data found for: {item_name}")
+        return
+    item_data = _rows.iloc[0]
 
     vel     = item_data.get("VELOCITY_CLASS", "—")
     overall = item_data.get("LIFECYCLE_OVERALL", "—")
     vcol    = velocity_colors.get(vel, "#888888")
     ocol    = lifecycle_colors.get(overall, "#888888")
 
-    # Per-year lifecycle badges from the full (unfiltered) dataset for this item
     lc_years = (
-        df_all[df_all["ITEM_DESCR"] == sel_items[0]]
+        df_all[df_all["ITEM_DESCR"] == item_name]
         .drop_duplicates(subset=["YEAR"])
         .sort_values("YEAR")[["YEAR", "LIFECYCLE_STATUS"]]
     )
@@ -144,39 +174,50 @@ if len(sel_items) == 1:
         f'{int(r.YEAR)}: {r.LIFECYCLE_STATUS}</span>'
         for _, r in lc_years.iterrows()
     )
+    total_sales = int(df[df["ITEM_DESCR"] == item_name]["ACTUAL_WEEKLY_DEMAND"].sum())
 
-    st.markdown(
+    container.markdown(
         f"""
         <div style="background:#1e1e2e;border:1px solid #444;border-radius:10px;padding:18px 24px;margin-bottom:16px;">
-            <div style="font-size:20px;font-weight:700;color:#ffffff;margin-bottom:6px;">
+            <div style="font-size:18px;font-weight:700;color:#ffffff;margin-bottom:6px;">
                 {item_data['ITEM_DESCR']}
             </div>
-            <div style="font-size:13px;color:#aaaaaa;margin-bottom:14px;">
-                Item ID: <b style="color:#fff">{item_data['ITEM_ID']}</b>
+            <div style="font-size:12px;color:#aaaaaa;margin-bottom:12px;">
+                ID: <b style="color:#fff">{item_data['ITEM_ID']}</b>
                 &nbsp;|&nbsp; Brand: <b style="color:#fff">{item_data['BRAND']}</b>
                 &nbsp;|&nbsp; Vendor: <b style="color:#fff">{item_data['VENDOR']}</b>
-                &nbsp;|&nbsp; Product Family: <b style="color:#fff">{item_data['PRODFAM']}</b>
+                &nbsp;|&nbsp; Family: <b style="color:#fff">{item_data['PRODFAM']}</b>
             </div>
-            <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px;">
-                <span style="background:{vcol};color:#fff;padding:4px 14px;border-radius:20px;font-size:13px;font-weight:600;">
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+                <span style="background:{vcol};color:#fff;padding:3px 12px;border-radius:20px;font-size:12px;font-weight:600;">
                     ⚡ {vel}
                 </span>
-                <span style="background:{ocol};color:#fff;padding:4px 14px;border-radius:20px;font-size:13px;font-weight:600;">
-                    🔄 Overall: {overall}
+                <span style="background:{ocol};color:#fff;padding:3px 12px;border-radius:20px;font-size:12px;font-weight:600;">
+                    🔄 {overall}
                 </span>
-                <span style="background:#2a2a3e;color:#ccc;padding:4px 14px;border-radius:20px;font-size:13px;">
-                    📦 Total Sales: <b style="color:#fff">{int(df[df['ITEM_DESCR']==sel_items[0]]['ACTUAL_WEEKLY_DEMAND'].sum()):,}</b>
+                <span style="background:#2a2a3e;color:#ccc;padding:3px 12px;border-radius:20px;font-size:12px;">
+                    📦 <b style="color:#fff">{total_sales:,}</b> units
                 </span>
-                <span style="background:#2a2a3e;color:#ccc;padding:4px 14px;border-radius:20px;font-size:13px;">
-                    📈 Baseline/week: <b style="color:#fff">{item_data['BASELINE_DEMAND']:,.1f}</b>
+                <span style="background:#2a2a3e;color:#ccc;padding:3px 12px;border-radius:20px;font-size:12px;">
+                    📈 <b style="color:#fff">{item_data['BASELINE_DEMAND']:,.1f}</b>/wk baseline
                 </span>
             </div>
-            <div style="font-size:12px;color:#888;margin-bottom:6px;">Lifecycle by year:</div>
+            <div style="font-size:11px;color:#888;margin-bottom:5px;">Lifecycle by year:</div>
             <div>{year_badges}</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+if sel_items:
+    if len(sel_items) == 1:
+        render_item_card(sel_items[0])
+    else:
+        for i in range(0, len(sel_items), 2):
+            cols = st.columns(2)
+            render_item_card(sel_items[i], cols[0])
+            if i + 1 < len(sel_items):
+                render_item_card(sel_items[i + 1], cols[1])
     st.divider()
 
 # ── KPI cards ─────────────────────────────────────────────────────────────────
@@ -198,61 +239,102 @@ st.divider()
 # ── Chart 1: Actual vs Baseline vs Seasonal Baseline ─────────────────────────
 st.subheader("Actual Demand vs Baseline vs Seasonal Baseline")
 
-# Build a complete week scaffold (W01–W52 for every year in view)
-# Generated mathematically so future/missing weeks are always included
+# Build week scaffold up to the last week that has actual data
 _years_in_view = sorted(set(sel_years) if sel_years else set(df_all["YEAR"].unique()))
+_last_week = df_all["WEEK_LABEL"].max()  # e.g. "2026-W13"
 _full_weeks = [
     f"{yr}-W{wk:02d}"
     for yr in _years_in_view
     for wk in range(1, 53)
+    if f"{yr}-W{wk:02d}" <= _last_week
 ]
 scaffold = pd.DataFrame({"WEEK_LABEL": _full_weeks})
 
-# Actual bars respect the toggle; baseline lines always use full data so they never drop to 0
-df_chart = df if show_zeros else df[df["ACTUAL_WEEKLY_DEMAND"] > 0]
-
 actual = (
-    df_chart.groupby("WEEK_LABEL")["ACTUAL_WEEKLY_DEMAND"]
+    df[df["ACTUAL_WEEKLY_DEMAND"] > 0]
+    .groupby("WEEK_LABEL")["ACTUAL_WEEKLY_DEMAND"]
     .sum()
     .reset_index()
     .rename(columns={"ACTUAL_WEEKLY_DEMAND": "ACTUAL"})
 )
 
-baselines = (
-    df.groupby("WEEK_LABEL")
-    .agg(
-        BASELINE=("BASELINE_DEMAND", "mean"),
-        SEASONAL_BASELINE=("SEASONAL_BASELINE", "sum"),
-    )
-    .reset_index()
-)
-
-trend = scaffold.merge(actual, on="WEEK_LABEL", how="left")
-trend = trend.merge(baselines, on="WEEK_LABEL", how="left")
-trend["ACTUAL"] = trend["ACTUAL"].fillna(0)
+if show_zeros:
+    trend = scaffold.merge(actual, on="WEEK_LABEL", how="left")
+    trend["ACTUAL"] = trend["ACTUAL"].fillna(0)
+else:
+    trend = actual.copy()
+trend["WEEK_NUM_VAL"] = trend["WEEK_LABEL"].str.extract(r"W(\d+)")[0].astype(int)
 trend = trend.sort_values("WEEK_LABEL").reset_index(drop=True)
+
+# Flat baseline anchors seasonal lines to the actual demand scale
+_nonzero  = trend.loc[trend["ACTUAL"] > 0, "ACTUAL"]
+flat_base = float(_nonzero.mean()) if len(_nonzero) > 0 else 0.0
 
 fig_trend = go.Figure()
 fig_trend.add_bar(
     x=trend["WEEK_LABEL"], y=trend["ACTUAL"],
     name="Actual Demand", marker_color="#4472C4", opacity=0.8,
 )
-fig_trend.add_scatter(
-    x=trend["WEEK_LABEL"], y=trend["SEASONAL_BASELINE"],
-    mode="lines", name="Seasonal Baseline",
-    line=dict(color="#FF0000", width=2),
-)
-fig_trend.add_scatter(
-    x=trend["WEEK_LABEL"], y=trend["BASELINE"],
-    mode="lines", name="Flat Baseline",
-    line=dict(color="#70AD47", width=1.5, dash="dash"),
-)
+
+
+for i, pf in enumerate(active_prodfams):
+    _pf_si = df_pf[df_pf["PRODFAM"] == pf].set_index("WEEK_NUM")["SEASONALITY_INDEX"]
+    _color = FAMILY_COLORS.get(pf, _DEFAULT_COLORS[i % len(_DEFAULT_COLORS)])
+    fig_trend.add_scatter(
+        x=trend["WEEK_LABEL"],
+        y=trend["WEEK_NUM_VAL"].map(_pf_si).fillna(0) * flat_base,
+        mode="lines", name=f"Seasonal Baseline ({pf})",
+        line=dict(color=_color, width=2),
+    )
+
+# Year separator lines — vertical dashed line + label at W01 of each year
+for yr in _years_in_view:
+    x_pos = f"{yr}-W01"
+    fig_trend.add_vline(
+        x=x_pos, line_dash="dash", line_color="rgba(255,255,255,0.25)", line_width=1,
+    )
+    fig_trend.add_annotation(
+        x=x_pos, y=1, yref="paper",
+        text=str(yr), showarrow=False,
+        font=dict(color="rgba(255,255,255,0.55)", size=12),
+        xanchor="left", yanchor="top", xshift=4,
+    )
+
 fig_trend.update_layout(
     height=400, margin=dict(l=0, r=0, t=30, b=0),
     legend=dict(orientation="h", y=1.08),
 )
 fig_trend.update_xaxes(tickangle=45, nticks=40)
 st.plotly_chart(fig_trend, use_container_width=True)
+
+# ── Seasonal Index Profile (one line per active family) ───────────────────────
+if active_prodfams:
+    title_fams = " vs ".join(active_prodfams)
+    st.subheader(f"Seasonal Index Profile — {title_fams}")
+    fig_si = go.Figure()
+    for i, pf in enumerate(active_prodfams):
+        pf_si  = df_pf[df_pf["PRODFAM"] == pf].sort_values("WEEK_NUM").reset_index(drop=True)
+        _color = FAMILY_COLORS.get(pf, _DEFAULT_COLORS[i % len(_DEFAULT_COLORS)])
+        fig_si.add_scatter(
+            x=pf_si["WEEK_NUM"], y=pf_si["SEASONALITY_INDEX"],
+            mode="lines+markers", name=pf,
+            line=dict(color=_color, width=2.5),
+            marker=dict(size=5),
+        )
+    fig_si.add_hline(
+        y=1.0, line_dash="dash", line_color="#888888",
+        annotation_text="Baseline (SI = 1.0)", annotation_position="bottom right",
+    )
+    fig_si.update_layout(
+        height=300, margin=dict(l=0, r=0, t=30, b=0),
+        yaxis_title="Seasonality Index",
+        xaxis_title="Week of Year",
+        legend=dict(orientation="h", y=1.08),
+    )
+    fig_si.update_xaxes(tickmode="linear", tick0=1, dtick=4,
+                        ticktext=[f"W{w:02d}" for w in range(1, 53, 4)],
+                        tickvals=list(range(1, 53, 4)))
+    st.plotly_chart(fig_si, use_container_width=True)
 
 st.divider()
 
@@ -316,5 +398,5 @@ display_df.columns = [
     "Seasonality Index", "Seasonal Baseline",
 ]
 
-st.dataframe(display_df.head(2000), use_container_width=True, height=400)
-st.caption(f"Showing {min(len(display_df), 2000):,} of {len(display_df):,} rows after filters.")
+st.dataframe(display_df, use_container_width=True, height=400)
+st.caption(f"Showing {len(display_df):,} rows after filters.")
